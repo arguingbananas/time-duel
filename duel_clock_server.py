@@ -567,7 +567,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     myClockEl.textContent = fmt(myR);
     oppTimeEl.textContent = fmt(oppR);
     if (state.puzzle) {
-      updateRotation(state.puzzle);
+      updateRotation(state.puzzle, state.serverNow);
     }
   }
 
@@ -581,9 +581,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
   var lastRotationAngle = 0;
   var lastPuzzleRotationKey = null;
 
-  function getRotationAngle(puzzle) {
+  function getRotationAngle(puzzle, serverNow) {
     if (!puzzle || !puzzle.rotationStartedAt) return 0;
-    var elapsed = Date.now() - puzzle.rotationStartedAt;
+    var refTime = serverNow || Date.now();
+    var elapsed = refTime - puzzle.rotationStartedAt;
     var rotationCount = Math.floor(elapsed / 4000);
     var currentRotation = (puzzle.rotationIndex + rotationCount) % 4;
     return currentRotation * 90;
@@ -606,14 +607,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
     
     if (key === lastPuzzleKey && rotKey === lastPuzzleRotationKey) {
       puzzleArea.classList.add('show');
-      updateRotation(p);
+      updateRotation(p, lastState.serverNow);
       return;
     }
     lastPuzzleKey = key;
     lastPuzzleRotationKey = rotKey;
 
-    var currentMissing = p.currentMissingIndex !== undefined ? p.currentMissingIndex : p.missingIndex;
-    document.getElementById('puzzleShape').innerHTML = shapeWithGapSvg(p.shapeType, currentMissing, p.color);
+    document.getElementById('puzzleShape').innerHTML = shapeWithGapSvg(p.shapeType, p.missingIndex, p.color);
 
     var choicesEl = document.getElementById('puzzleChoices');
     choicesEl.innerHTML = '';
@@ -626,12 +626,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
     });
 
     puzzleArea.classList.add('show');
-    updateRotation(p);
+    updateRotation(p, lastState.serverNow);
   }
 
-  function updateRotation(puzzle) {
-    if (!puzzle) return;
-    var angle = getRotationAngle(puzzle);
+  function updateRotation(puzzle, serverNow) {
+    if (!puzzle || !puzzle.rotationStartedAt) return;
+    var angle = getRotationAngle(puzzle, serverNow);
     if (angle !== lastRotationAngle) {
       lastRotationAngle = angle;
       var shapeEl = document.getElementById('puzzleShape');
@@ -640,6 +640,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
         if (svg) {
           svg.style.transform = 'rotate(' + angle + 'deg)';
         }
+      }
+    }
+  }
       }
     }
   }
@@ -679,7 +682,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       applyColors(lastState, myTurn);
 
       if (lastState.puzzle) {
-        updateRotation(lastState.puzzle);
+        updateRotation(lastState.puzzle, lastState.serverNow);
       }
 
       rafHandle = requestAnimationFrame(frame);
