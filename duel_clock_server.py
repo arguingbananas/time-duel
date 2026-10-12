@@ -30,6 +30,8 @@ LOCK = threading.Lock()
 WRONG_PENALTY_MS = 2000
 GAME_MINUTES = 3
 NUM_CHOICES = 5
+ROTATION_INTERVAL_MS = 4000
+# TODO: Consider adjusting rotation speed as time runs low
 
 # Shapes whose four pieces are visually distinct by orientation/position,
 # so the puzzle can't be solved by color alone. See SHAPE_DATA in the
@@ -93,7 +95,19 @@ def make_puzzle():
         "missingIndex": missing_index,
         "choices": choices,
         "correctIndex": correct_index,
+        "rotationIndex": 0,
+        "rotationStartedAt": now_ms(),
     }
+
+
+def get_current_missing_index(puzzle):
+    """Calculate which piece is currently the gap based on rotation."""
+    if not puzzle:
+        return None
+    elapsed = now_ms() - puzzle["rotationStartedAt"]
+    rotation_count = elapsed // ROTATION_INTERVAL_MS
+    current_rotation = (puzzle["rotationIndex"] + rotation_count) % 4
+    return (puzzle["missingIndex"] + current_rotation) % 4
 
 
 def default_state():
@@ -141,6 +155,9 @@ def snapshot():
             "color": puzzle["color"],
             "missingIndex": puzzle["missingIndex"],
             "choices": puzzle["choices"],
+            "rotationIndex": puzzle["rotationIndex"],
+            "rotationStartedAt": puzzle["rotationStartedAt"],
+            "currentMissingIndex": get_current_missing_index(puzzle),
             # correctIndex intentionally omitted -- not sent to the client
         }
     s["serverNow"] = now_ms()
@@ -194,8 +211,15 @@ def do_answer(role, choice):
 
         puzzle = STATE.get("puzzle") or {}
         try:
-            correct = (puzzle.get("correctIndex") is not None
-                       and int(choice) == int(puzzle["correctIndex"]))
+            choice_int = int(choice)
+            choices = puzzle.get("choices", [])
+            if 0 <= choice_int < len(choices):
+                chosen_piece = choices[choice_int].get("pieceIndex")
+                current_missing = get_current_missing_index(puzzle)
+                correct = (chosen_piece is not None and current_missing is not None
+                           and int(chosen_piece) == int(current_missing))
+            else:
+                correct = False
         except (TypeError, ValueError):
             correct = False
 
@@ -275,7 +299,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #puzzleArea { display: none; flex-direction: column; align-items: center; margin-top: 6px; width: 100%; padding: 0 18px; }
   #puzzleArea.show { display: flex; }
   #puzzleShape { width: 32vw; max-width: 175px; margin-bottom: 20px; }
-  #puzzleShape svg { width: 100%; height: auto; display: block; overflow: visible; }
+  #puzzleShape svg { width: 100%; height: auto; display: block; overflow: visible; transition: transform 0.5s ease-in-out; }
   #puzzleChoices { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; max-width: 340px; }
   .choiceTile { width: 54px; height: 54px; border-radius: 14px; border: none; background: rgba(0,0,0,0.18); padding: 7px; display: flex; align-items: center; justify-content: center; flex: 0 0 auto; }
   .choiceTile:active { background: rgba(0,0,0,0.32); }
@@ -417,11 +441,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
     }
   };
 
-  function shapeWithGapSvg(shapeType, missingIndex, color) {
+  function shapeWithGapSvg(shapeType, currentMissingIndex, color) {
     var data = SHAPE_DATA[shapeType];
     var svg = '<svg viewBox="' + data.viewBox + '">';
     data.pieces.forEach(function(d, i) {
-      if (i === missingIndex) {
+      if (i === currentMissingIndex) {
         svg += '<path d="' + d + '" fill="rgba(255,255,255,0.12)" stroke="rgba(255,255,255,0.65)" stroke-width="2" stroke-dasharray="4,3"/>';
       } else {
         svg += '<path d="' + d + '" fill="' + color + '"/>';
@@ -542,6 +566,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
     var oppR = myRole === 'p1' ? r.p2r : r.p1r;
     myClockEl.textContent = fmt(myR);
     oppTimeEl.textContent = fmt(oppR);
+    if (state.puzzle) {
+      updateRotation(state.puzzle);
+    }
   }
 
   function applyColors(state, myTurn) {
@@ -551,20 +578,42 @@ INDEX_HTML = r"""<!DOCTYPE html>
     else { gameInner.style.background = mineDark; gameInner.style.color = 'rgba(243,237,227,0.9)'; }
   }
 
+  var lastRotationAngle = 0;
+  var lastPuzzleRotationKey = null;
+
+  function getRotationAngle(puzzle) {
+    if (!puzzle || !puzzle.rotationStartedAt) return 0;
+    var elapsed = Date.now() - puzzle.rotationStartedAt;
+    var rotationCount = Math.floor(elapsed / 4000);
+    var currentRotation = (puzzle.rotationIndex + rotationCount) % 4;
+    return currentRotation * 90;
+  }
+
   function renderPuzzle(state) {
     var myTurn = state.activePlayer === myRole;
     if (!myTurn || !state.puzzle) {
       puzzleArea.classList.remove('show');
       lastPuzzleKey = null;
+      lastPuzzleRotationKey = null;
+      lastRotationAngle = 0;
       return;
     }
     var p = state.puzzle;
     var key = p.shapeType + '|' + p.color + '|' + p.missingIndex + '|' +
       p.choices.map(function(c){ return c.shapeType + c.pieceIndex; }).join(',');
-    if (key === lastPuzzleKey) { puzzleArea.classList.add('show'); return; }
+    
+    var rotKey = key + '|' + (p.rotationIndex || 0) + '|' + (p.rotationStartedAt || 0);
+    
+    if (key === lastPuzzleKey && rotKey === lastPuzzleRotationKey) {
+      puzzleArea.classList.add('show');
+      updateRotation(p);
+      return;
+    }
     lastPuzzleKey = key;
+    lastPuzzleRotationKey = rotKey;
 
-    document.getElementById('puzzleShape').innerHTML = shapeWithGapSvg(p.shapeType, p.missingIndex, p.color);
+    var currentMissing = p.currentMissingIndex !== undefined ? p.currentMissingIndex : p.missingIndex;
+    document.getElementById('puzzleShape').innerHTML = shapeWithGapSvg(p.shapeType, currentMissing, p.color);
 
     var choicesEl = document.getElementById('puzzleChoices');
     choicesEl.innerHTML = '';
@@ -577,6 +626,22 @@ INDEX_HTML = r"""<!DOCTYPE html>
     });
 
     puzzleArea.classList.add('show');
+    updateRotation(p);
+  }
+
+  function updateRotation(puzzle) {
+    if (!puzzle) return;
+    var angle = getRotationAngle(puzzle);
+    if (angle !== lastRotationAngle) {
+      lastRotationAngle = angle;
+      var shapeEl = document.getElementById('puzzleShape');
+      if (shapeEl) {
+        var svg = shapeEl.querySelector('svg');
+        if (svg) {
+          svg.style.transform = 'rotate(' + angle + 'deg)';
+        }
+      }
+    }
   }
 
   function submitAnswer(choiceSlot) {
@@ -613,6 +678,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
       myStatusEl.textContent = myTurn ? 'pick the missing piece' : 'waiting on opponent';
       applyColors(lastState, myTurn);
 
+      if (lastState.puzzle) {
+        updateRotation(lastState.puzzle);
+      }
+
       rafHandle = requestAnimationFrame(frame);
     }
     frameStart = Date.now();
@@ -621,6 +690,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   function stopTicking() {
     if (rafHandle) cancelAnimationFrame(rafHandle);
     rafHandle = null;
+    lastRotationAngle = 0;
+    lastPuzzleRotationKey = null;
   }
 
   function poll() {
