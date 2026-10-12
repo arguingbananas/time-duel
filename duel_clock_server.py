@@ -44,7 +44,12 @@ SHAPE_TYPES = ["square", "rectangle", "diamond", "triangle",
 COLORS = ["#e0793c", "#3c8ee0", "#4caf6b", "#c14ccb", "#e0c93c", "#e0577a"]
 
 
+_mock_time = None
+
+
 def now_ms():
+    if _mock_time is not None:
+        return _mock_time
     return int(time.time() * 1000)
 
 
