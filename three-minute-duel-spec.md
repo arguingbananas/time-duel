@@ -67,6 +67,15 @@ Each puzzle presents **five** tiles: one correct piece and four decoys.
 
 Shapes are drawn as inline SVG using hardcoded path data per shape type (defined once in the client-side JavaScript, in a `SHAPE_DATA` table). No image files, no network image fetches. The "gap" piece is rendered with a translucent fill and dashed stroke so its exact outline is visible for comparison against the candidate tiles.
 
+### 3.4 Rotation mechanic
+
+After each puzzle is generated, the shape rotates 90° every 4 seconds (`ROTATION_INTERVAL_MS = 4000`). The gap position shifts with each rotation, so the correct answer changes dynamically — the client must track which piece index currently aligns with the gap, not just the initial `missingIndex`.
+
+- The triangle (`"triangle"`) is the only **non-rotating** shape (`NON_ROTATING_SHAPES = {"triangle"}`), because its four pieces do not map onto each other under 90° turns (the inverted centre piece stays put).
+- The server calculates the current gap position server-side via `get_current_missing_index()`, which adds the elapsed rotation count to the original `missingIndex` modulo 4.
+- Answer validation always uses the **current** missing index (after rotation), not the static `missingIndex` stored in the puzzle object.
+- The client renders the shape with a CSS `rotate()` transform based on the server timestamp (`serverNow`) and the puzzle's `rotationStartedAt`, so the visual rotation stays in sync with the server's calculation.
+
 ---
 
 ## 4. Architecture
@@ -115,11 +124,16 @@ Internal (server-only) fields are marked; everything else is included in the pub
 
 | Field | Type | Visibility | Description |
 |---|---|---|---|
+| `id` | int | public | Monotonically increasing puzzle identifier. Used to reject stale answer submissions. |
 | `shapeType` | string | public | One of the 8 shape type names. |
 | `color` | string (hex) | public | Shared fill color for this puzzle's gap and choice tiles. |
-| `missingIndex` | int (0–3) | public | Which of the shape's 4 pieces is missing. |
+| `missingIndex` | int (0–3) | public | The original missing piece index (before rotation). |
 | `choices` | array of `{shapeType, pieceIndex}` | public | The 5 candidate tiles, in display order. |
 | `correctIndex` | int (0–4) | **server-only** | Which slot in `choices` is correct. Stripped out before the state is sent to clients. |
+| `rotates` | bool | public | `false` for shapes in `NON_ROTATING_SHAPES` (currently only `"triangle"`); `true` otherwise. |
+| `rotationIndex` | int | public | The rotation count when this puzzle was created (always `0` for newly generated puzzles). |
+| `rotationStartedAt` | int (epoch ms) | public | Server timestamp when the first rotation cycle began. |
+| `rotationIntervalMs` | int | public | Milliseconds between each 90° rotation (always `4000`). |
 
 ### 5.3 Server-authoritative time enforcement
 
@@ -142,7 +156,7 @@ All endpoints return JSON. `POST` endpoints accept a JSON body (may be empty `{}
 | `GET /state` | — | Polled every 250ms by each client. Returns the current game state (with `puzzle.correctIndex` stripped). | Full state snapshot |
 | `POST /join` | — | Auto-assigns the caller as `p1` (if free) or `p2` (if `p1` taken). Returns `409 {"error": "full"}` if both roles are already taken. | State snapshot + `yourRole` |
 | `POST /start` | — | Transitions `ready` → `active`; sets `activePlayer = "p1"`, starts the clock, generates the first puzzle. Rejected (`409`) unless `status == "ready"`. | State snapshot |
-| `POST /answer` | `{ "role": "p1"\|"p2", "choice": 0-4 }` | Submits an answer for the caller's puzzle. Validates `role == activePlayer`; deducts elapsed time (and, if wrong, the 2000ms penalty); passes or retains the turn accordingly; generates a new puzzle. Rejected (`409`) if it isn't that role's turn. | State snapshot |
+| `POST /answer` | `{ "role": "p1"\|"p2", "choice": 0-4, "puzzleId": int }` | Submits an answer for the caller's puzzle. Validates `role == activePlayer`; rejects stale answers (mismatched `puzzleId`); validates against the **current** missing index (accounting for rotation); deducts elapsed time (and, if wrong, the 2000ms penalty); passes or retains the turn accordingly; generates a new puzzle. Rejected (`409`) if it isn't that role's turn. | State snapshot |
 | `POST /new` | — | Resets the entire game to a fresh `claiming` state (both roles released, clocks reset). Used for "Play again." | State snapshot |
 
 ### 6.1 Example `/state` response (mid-game)
@@ -159,6 +173,7 @@ All endpoints return JSON. `POST` endpoints accept a JSON body (may be empty `{}
   "p2Taken": true,
   "winner": null,
   "puzzle": {
+    "id": 1,
     "shapeType": "hexagon",
     "color": "#3c8ee0",
     "missingIndex": 2,
@@ -168,7 +183,11 @@ All endpoints return JSON. `POST` endpoints accept a JSON body (may be empty `{}
       {"shapeType": "hexagon", "pieceIndex": 2},
       {"shapeType": "hexagon", "pieceIndex": 1},
       {"shapeType": "cross", "pieceIndex": 1}
-    ]
+    ],
+    "rotates": true,
+    "rotationIndex": 0,
+    "rotationStartedAt": 1732000000000,
+    "rotationIntervalMs": 4000
   },
   "serverNow": 1732000012345
 }

@@ -18,6 +18,7 @@ No dependencies beyond the Python standard library -- nothing to pip
 install, and no images fetched over the network (the shapes are drawn
 as SVG paths in the browser).
 """
+import itertools
 import json
 import random
 import socket
@@ -32,6 +33,11 @@ GAME_MINUTES = 3
 NUM_CHOICES = 5
 ROTATION_INTERVAL_MS = 4000
 # TODO: Consider adjusting rotation speed as time runs low
+
+# Shapes whose pieces don't map onto each other under a 90-degree turn (the
+# triangle's inverted centre piece stays put), so they never rotate.
+NON_ROTATING_SHAPES = {"triangle"}
+_puzzle_ids = itertools.count(1)
 
 # Shapes whose four pieces are visually distinct by orientation/position,
 # so the puzzle can't be solved by color alone. See SHAPE_DATA in the
@@ -71,13 +77,11 @@ def make_puzzle():
     # prefer decoys from the same shape first (most relevant distractors)
     random.shuffle(same_shape_pool)
     for idx in same_shape_pool:
-        key = (shape_type, idx)
         decoys.append({"shapeType": shape_type, "pieceIndex": idx})
-        seen.add(key)
+        seen.add((shape_type, idx))
 
     # fill any remaining slots with pieces borrowed from other shapes
     attempts = 0
-    needed = (NUM_CHOICES - 1) - len(decoys)
     while len(decoys) < NUM_CHOICES - 1 and attempts < 200:
         attempts += 1
         other_shape = random.choice(SHAPE_TYPES)
@@ -99,6 +103,7 @@ def make_puzzle():
         "color": color,
         "missingIndex": missing_index,
         "choices": choices,
+        "id": next(_puzzle_ids),
         "correctIndex": correct_index,
         "rotationIndex": 0,
         "rotationStartedAt": now_ms(),
@@ -109,6 +114,8 @@ def get_current_missing_index(puzzle):
     """Calculate which piece is currently the gap based on rotation."""
     if not puzzle:
         return None
+    if puzzle["shapeType"] in NON_ROTATING_SHAPES:
+        return puzzle["missingIndex"]
     elapsed = now_ms() - puzzle["rotationStartedAt"]
     rotation_count = elapsed // ROTATION_INTERVAL_MS
     current_rotation = (puzzle["rotationIndex"] + rotation_count) % 4
@@ -134,6 +141,15 @@ def default_state():
 STATE = default_state()
 
 
+def end_game(state, loser):
+    """Mark the game over because `loser` ran out of time. Mutates state."""
+    state["status"] = "gameover"
+    state["winner"] = "p2" if loser == "p1" else "p1"
+    state["turnStartedAt"] = None
+    state["activePlayer"] = None
+    state["puzzle"] = None
+
+
 def finalize_if_expired(state):
     """If the active player's clock has run out, end the game. Mutates state."""
     if state["status"] != "active" or not state["activePlayer"]:
@@ -142,11 +158,7 @@ def finalize_if_expired(state):
     key = "p1RemainingMs" if state["activePlayer"] == "p1" else "p2RemainingMs"
     if state[key] - elapsed <= 0:
         state[key] = 0
-        state["status"] = "gameover"
-        state["winner"] = "p2" if state["activePlayer"] == "p1" else "p1"
-        state["turnStartedAt"] = None
-        state["activePlayer"] = None
-        state["puzzle"] = None
+        end_game(state, state["activePlayer"])
     return state
 
 
@@ -156,14 +168,17 @@ def snapshot():
     if s.get("puzzle"):
         puzzle = s["puzzle"]
         s["puzzle"] = {
+            "id": puzzle["id"],
             "shapeType": puzzle["shapeType"],
             "color": puzzle["color"],
             "missingIndex": puzzle["missingIndex"],
             "choices": puzzle["choices"],
+            "rotates": puzzle["shapeType"] not in NON_ROTATING_SHAPES,
             "rotationIndex": puzzle["rotationIndex"],
             "rotationStartedAt": puzzle["rotationStartedAt"],
-            "currentMissingIndex": get_current_missing_index(puzzle),
-            # correctIndex intentionally omitted -- not sent to the client
+            "rotationIntervalMs": ROTATION_INTERVAL_MS,
+            # No answer field: the client works out which slot is correct
+            # from the rotation, and the server re-checks every answer.
         }
     s["serverNow"] = now_ms()
     return s
@@ -202,7 +217,7 @@ def do_start():
         return snapshot(), 200
 
 
-def do_answer(role, choice):
+def do_answer(role, choice, puzzle_id=None):
     with LOCK:
         finalize_if_expired(STATE)
         if STATE["status"] != "active":
@@ -210,19 +225,26 @@ def do_answer(role, choice):
         if STATE["activePlayer"] != role:
             return {"error": "not_your_turn"}, 409
 
+        # A tap meant for a puzzle that has since been replaced (double-tap
+        # after a wrong answer) must not be graded against the new one.
+        puzzle = STATE.get("puzzle") or {}
+        if puzzle_id is not None and puzzle_id != puzzle.get("id"):
+            return {"error": "stale_puzzle"}, 409
+
         elapsed = now_ms() - STATE["turnStartedAt"]
         key = "p1RemainingMs" if role == "p1" else "p2RemainingMs"
         STATE[key] = max(0, STATE[key] - elapsed)
 
-        puzzle = STATE.get("puzzle") or {}
         try:
             choice_int = int(choice)
             choices = puzzle.get("choices", [])
             if 0 <= choice_int < len(choices):
-                chosen_piece = choices[choice_int].get("pieceIndex")
+                chosen = choices[choice_int]
                 current_missing = get_current_missing_index(puzzle)
-                correct = (chosen_piece is not None and current_missing is not None
-                           and int(chosen_piece) == int(current_missing))
+                # shape type must match too: a decoy borrowed from another
+                # shape can share the right piece index.
+                correct = (chosen.get("shapeType") == puzzle["shapeType"]
+                           and chosen.get("pieceIndex") == current_missing)
             else:
                 correct = False
         except (TypeError, ValueError):
@@ -232,11 +254,7 @@ def do_answer(role, choice):
             STATE[key] = max(0, STATE[key] - WRONG_PENALTY_MS)
 
         if STATE[key] <= 0:
-            STATE["status"] = "gameover"
-            STATE["winner"] = "p2" if role == "p1" else "p1"
-            STATE["turnStartedAt"] = None
-            STATE["activePlayer"] = None
-            STATE["puzzle"] = None
+            end_game(STATE, role)
             return snapshot(), 200
 
         if correct:
@@ -250,7 +268,11 @@ def do_answer(role, choice):
 def do_new():
     global STATE
     with LOCK:
-        STATE = default_state()
+        finalize_if_expired(STATE)
+        # Both phones show "Play again"; only the first tap may reset, or the
+        # second tap would wipe the seat the first player just re-claimed.
+        if STATE["status"] == "gameover":
+            STATE = default_state()
         return snapshot(), 200
 
 
@@ -495,6 +517,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
           : "Couldn't connect right now.";
         return;
       }
+      document.getElementById('claimErr').textContent = '';
       myRole = res.data.yourRole;
       sessionStorage.setItem('duelclock_role', myRole);
       onState(res.data);
@@ -514,6 +537,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
   function onState(state) {
     lastState = state;
+    frameStart = Date.now();  // when this state arrived; clocks extrapolate from here
+    if (state.status !== 'gameover') {
+      document.getElementById('resultOverlay').classList.remove('show');
+    }
     if (state.status === 'claiming') {
       if (myRole && ((myRole === 'p1' && !state.p1Taken) || (myRole === 'p2' && !state.p2Taken))) {
         myRole = null; sessionStorage.removeItem('duelclock_role');
@@ -542,6 +569,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       if (!myRole) { showScreen('claiming'); return; }
       showScreen('game');
       stopTicking();
+      puzzleArea.classList.remove('show');
       renderOnce(state);
       var won = state.winner === myRole;
       document.getElementById('resultText').textContent = won ? 'You win' : 'You lose';
@@ -571,9 +599,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
     var oppR = myRole === 'p1' ? r.p2r : r.p1r;
     myClockEl.textContent = fmt(myR);
     oppTimeEl.textContent = fmt(oppR);
-    if (state.puzzle) {
-      updateRotation(state.puzzle, state.serverNow);
-    }
   }
 
   function applyColors(state, myTurn) {
@@ -584,15 +609,28 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
 
   var lastRotationAngle = 0;
-  var lastPuzzleRotationKey = null;
 
-  function getRotationAngle(puzzle, serverNow) {
-    if (!puzzle || !puzzle.rotationStartedAt) return 0;
-    var refTime = serverNow || Date.now();
-    var elapsed = refTime - puzzle.rotationStartedAt;
-    var rotationCount = Math.floor(elapsed / 4000);
-    var currentRotation = (puzzle.rotationIndex + rotationCount) % 4;
-    return currentRotation * 90;
+  // Best guess at the server's clock right now: the timestamp that arrived
+  // with the last state, plus however long ago it arrived.
+  function estServerNow() {
+    return lastState.serverNow + (Date.now() - frameStart);
+  }
+
+  // Cumulative (never wrapped to 360) so the CSS transition always keeps
+  // turning forward instead of spinning back 270 degrees at the wrap.
+  function getRotationAngle(puzzle) {
+    if (!puzzle || !puzzle.rotates || !puzzle.rotationStartedAt) return 0;
+    var interval = puzzle.rotationIntervalMs || 4000;
+    var steps = Math.max(0, Math.floor((estServerNow() - puzzle.rotationStartedAt) / interval));
+    return ((puzzle.rotationIndex || 0) + steps) * 90;
+  }
+
+  function updateRotation(puzzle) {
+    var angle = getRotationAngle(puzzle);
+    if (angle === lastRotationAngle) return;
+    lastRotationAngle = angle;
+    var svg = document.querySelector('#puzzleShape svg');
+    if (svg) svg.style.transform = 'rotate(' + angle + 'deg)';
   }
 
   function renderPuzzle(state) {
@@ -600,23 +638,22 @@ INDEX_HTML = r"""<!DOCTYPE html>
     if (!myTurn || !state.puzzle) {
       puzzleArea.classList.remove('show');
       lastPuzzleKey = null;
-      lastPuzzleRotationKey = null;
       lastRotationAngle = 0;
       return;
     }
     var p = state.puzzle;
-    var key = p.shapeType + '|' + p.color + '|' + p.missingIndex + '|' +
+    var key = p.id + '|' + p.shapeType + '|' + p.color + '|' + p.missingIndex + '|' +
       p.choices.map(function(c){ return c.shapeType + c.pieceIndex; }).join(',');
-    
-    var rotKey = key + '|' + (p.rotationIndex || 0) + '|' + (p.rotationStartedAt || 0);
-    
-    if (key === lastPuzzleKey && rotKey === lastPuzzleRotationKey) {
+
+    // Same puzzle as last poll: leave the DOM alone so taps aren't lost to a
+    // rebuild and the rotation transition isn't restarted.
+    if (key === lastPuzzleKey) {
       puzzleArea.classList.add('show');
-      updateRotation(p, lastState.serverNow);
+      updateRotation(p);
       return;
     }
     lastPuzzleKey = key;
-    lastPuzzleRotationKey = rotKey;
+    lastRotationAngle = 0;
 
     document.getElementById('puzzleShape').innerHTML = shapeWithGapSvg(p.shapeType, p.missingIndex, p.color);
 
@@ -626,36 +663,19 @@ INDEX_HTML = r"""<!DOCTYPE html>
       var b = document.createElement('button');
       b.className = 'choiceTile';
       b.innerHTML = pieceTileSvg(c.shapeType, c.pieceIndex, p.color);
-      b.addEventListener('click', function(ev){ ev.stopPropagation(); submitAnswer(slot); });
+      b.addEventListener('click', function(ev){ ev.stopPropagation(); submitAnswer(slot, p.id); });
       choicesEl.appendChild(b);
     });
 
     puzzleArea.classList.add('show');
-    updateRotation(p, lastState.serverNow);
+    updateRotation(p);
   }
 
-  function updateRotation(puzzle, serverNow) {
-    if (!puzzle || !puzzle.rotationStartedAt) return;
-    var angle = getRotationAngle(puzzle, serverNow);
-    if (angle !== lastRotationAngle) {
-      lastRotationAngle = angle;
-      var shapeEl = document.getElementById('puzzleShape');
-      if (shapeEl) {
-        var svg = shapeEl.querySelector('svg');
-        if (svg) {
-          svg.style.transform = 'rotate(' + angle + 'deg)';
-        }
-      }
-    }
-  }
-      }
-    }
-  }
-
-  function submitAnswer(choiceSlot) {
+  function submitAnswer(choiceSlot, puzzleId) {
     if (!lastState || lastState.status !== 'active' || lastState.activePlayer !== myRole) return;
+    if (lastState.puzzle && lastState.puzzle.id !== puzzleId) return;  // stale tile
     var wasRole = myRole;
-    post('/answer', { role: myRole, choice: choiceSlot }).then(function(res) {
+    post('/answer', { role: myRole, choice: choiceSlot, puzzleId: puzzleId }).then(function(res) {
       if (!res.ok) return;
       var stillMine = res.data.status === 'active' && res.data.activePlayer === wasRole;
       if (stillMine) flashPenalty();
@@ -671,9 +691,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
 
   function startTicking() {
-    stopTicking();
+    if (rafHandle) return;  // already running; onState calls this every poll
     function frame() {
-      if (!lastState || lastState.status !== 'active') return;
+      if (!lastState || lastState.status !== 'active') { rafHandle = null; return; }
       var elapsedSincePoll = Date.now() - frameStart;
       var r = computeRemaining(lastState, elapsedSincePoll);
       var myR = myRole === 'p1' ? r.p1r : r.p2r;
@@ -686,27 +706,19 @@ INDEX_HTML = r"""<!DOCTYPE html>
       myStatusEl.textContent = myTurn ? 'pick the missing piece' : 'waiting on opponent';
       applyColors(lastState, myTurn);
 
-      if (lastState.puzzle) {
-        updateRotation(lastState.puzzle, lastState.serverNow);
-      }
+      if (myTurn && lastState.puzzle) updateRotation(lastState.puzzle);
 
       rafHandle = requestAnimationFrame(frame);
     }
-    frameStart = Date.now();
     rafHandle = requestAnimationFrame(frame);
   }
   function stopTicking() {
     if (rafHandle) cancelAnimationFrame(rafHandle);
     rafHandle = null;
-    lastRotationAngle = 0;
-    lastPuzzleRotationKey = null;
   }
 
   function poll() {
-    getState().then(function(state){
-      frameStart = Date.now();
-      onState(state);
-    }).catch(function(){}).then(function(){
+    getState().then(onState).catch(function(){}).then(function(){
       setTimeout(poll, 250);
     });
   }
@@ -733,23 +745,31 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
     def do_GET(self):
-        if self.path in ("/", "/index.html"):
+        path = self.path.split("?", 1)[0]
+        if path in ("/", "/index.html"):
             self._send_html()
-        elif self.path.startswith("/state"):
+        elif path == "/state":
             self._send_json(snapshot())
         else:
             self.send_error(404)
 
     def do_POST(self):
-        length = int(self.headers.get("Content-Length", 0) or 0)
+        try:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+        except ValueError:
+            length = 0
+        length = max(0, min(length, 10_000))  # bodies here are tiny
         raw = self.rfile.read(length) if length else b"{}"
         try:
             payload = json.loads(raw or b"{}")
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            payload = {}
+        if not isinstance(payload, dict):
             payload = {}
 
         if self.path == "/join":
@@ -757,7 +777,8 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/start":
             result, code = do_start()
         elif self.path == "/answer":
-            result, code = do_answer(payload.get("role"), payload.get("choice"))
+            result, code = do_answer(payload.get("role"), payload.get("choice"),
+                                     payload.get("puzzleId"))
         elif self.path == "/new":
             result, code = do_new()
         else:

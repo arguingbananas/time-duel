@@ -98,43 +98,48 @@ class TestGetCurrentMissingIndex(unittest.TestCase):
         self.assertIsNone(srv.get_current_missing_index({}))
 
     def test_at_start_returns_missing_index(self):
-        puzzle = {"missingIndex": 2, "rotationIndex": 0, "rotationStartedAt": self.base_time}
+        puzzle = {"shapeType": "square", "missingIndex": 2, "rotationIndex": 0, "rotationStartedAt": self.base_time}
         srv._mock_time = self.base_time
         self.assertEqual(srv.get_current_missing_index(puzzle), 2)
 
     def test_after_one_rotation(self):
-        puzzle = {"missingIndex": 0, "rotationIndex": 0, "rotationStartedAt": self.base_time}
+        puzzle = {"shapeType": "square", "missingIndex": 0, "rotationIndex": 0, "rotationStartedAt": self.base_time}
         srv._mock_time = self.base_time + 4000
         self.assertEqual(srv.get_current_missing_index(puzzle), 1)
 
     def test_after_two_rotations(self):
-        puzzle = {"missingIndex": 0, "rotationIndex": 0, "rotationStartedAt": self.base_time}
+        puzzle = {"shapeType": "square", "missingIndex": 0, "rotationIndex": 0, "rotationStartedAt": self.base_time}
         srv._mock_time = self.base_time + 8000
         self.assertEqual(srv.get_current_missing_index(puzzle), 2)
 
     def test_after_three_rotations(self):
-        puzzle = {"missingIndex": 0, "rotationIndex": 0, "rotationStartedAt": self.base_time}
+        puzzle = {"shapeType": "square", "missingIndex": 0, "rotationIndex": 0, "rotationStartedAt": self.base_time}
         srv._mock_time = self.base_time + 12000
         self.assertEqual(srv.get_current_missing_index(puzzle), 3)
 
     def test_after_four_rotations_cycles(self):
-        puzzle = {"missingIndex": 0, "rotationIndex": 0, "rotationStartedAt": self.base_time}
+        puzzle = {"shapeType": "square", "missingIndex": 0, "rotationIndex": 0, "rotationStartedAt": self.base_time}
         srv._mock_time = self.base_time + 16000
         self.assertEqual(srv.get_current_missing_index(puzzle), 0)
 
     def test_wraps_correctly_from_nonzero_missing(self):
-        puzzle = {"missingIndex": 3, "rotationIndex": 0, "rotationStartedAt": self.base_time}
+        puzzle = {"shapeType": "square", "missingIndex": 3, "rotationIndex": 0, "rotationStartedAt": self.base_time}
         srv._mock_time = self.base_time + 4000
         self.assertEqual(srv.get_current_missing_index(puzzle), 0)
 
     def test_interior_rotation_count(self):
-        puzzle = {"missingIndex": 1, "rotationIndex": 0, "rotationStartedAt": self.base_time}
+        puzzle = {"shapeType": "square", "missingIndex": 1, "rotationIndex": 0, "rotationStartedAt": self.base_time}
         srv._mock_time = self.base_time + 6000
         self.assertEqual(srv.get_current_missing_index(puzzle), 2)
 
     def test_with_nonzero_rotation_index(self):
-        puzzle = {"missingIndex": 0, "rotationIndex": 2, "rotationStartedAt": self.base_time}
+        puzzle = {"shapeType": "square", "missingIndex": 0, "rotationIndex": 2, "rotationStartedAt": self.base_time}
         srv._mock_time = self.base_time + 4000
+        self.assertEqual(srv.get_current_missing_index(puzzle), 3)
+
+    def test_triangle_does_not_rotate(self):
+        puzzle = {"shapeType": "triangle", "missingIndex": 3, "rotationIndex": 0, "rotationStartedAt": self.base_time}
+        srv._mock_time = self.base_time + 100000
         self.assertEqual(srv.get_current_missing_index(puzzle), 3)
 
 
@@ -187,7 +192,7 @@ class TestGameFlow(unittest.TestCase):
         srv.do_join()
         start_state = srv.do_start()[0]
         puzzle = start_state["puzzle"]
-        current_missing = puzzle["currentMissingIndex"]
+        current_missing = srv.get_current_missing_index(puzzle)
         # Find a choice that matches currentMissingIndex
         matching_choices = [
             i for i, c in enumerate(puzzle["choices"])
@@ -202,12 +207,21 @@ class TestGameFlow(unittest.TestCase):
     def test_wrong_answer_penalizes_and_same_player_continues(self):
         srv.do_join()
         srv.do_join()
-        srv.do_start()
-        # Pick a wrong answer (slot 0 is likely wrong)
-        result, _ = srv.do_answer("p1", 0)
+        start_state = srv.do_start()[0]
+        puzzle = start_state["puzzle"]
+        current_missing = srv.get_current_missing_index(puzzle)
+        # Find a choice that does NOT match currentMissingIndex
+        wrong_choices = [
+            i for i, c in enumerate(puzzle["choices"])
+            if c["pieceIndex"] != current_missing or c["shapeType"] != puzzle["shapeType"]
+        ]
+        self.assertTrue(len(wrong_choices) > 0, "No wrong choice found")
+        wrong_idx = wrong_choices[0]
+        p1_before = srv.STATE["p1RemainingMs"]
+        result, _ = srv.do_answer("p1", wrong_idx)
         p1_remaining = result["p1RemainingMs"]
-        # Should have been penalized (remaining time decreased)
-        self.assertLess(p1_remaining, srv.STATE["p1RemainingMs"] + 100)
+        # Should have been penalized (remaining time decreased by at least 2000ms)
+        self.assertLess(p1_remaining, p1_before - 1000)
         self.assertEqual(result["activePlayer"], "p1")
 
     def test_answer_when_not_active_player(self):
@@ -228,7 +242,7 @@ class TestGameFlow(unittest.TestCase):
         srv.do_join()
         start_state = srv.do_start()[0]
         puzzle = start_state["puzzle"]
-        current_missing = puzzle["currentMissingIndex"]
+        current_missing = srv.get_current_missing_index(puzzle)
         # Find a choice that does NOT match currentMissingIndex
         wrong_choices = [
             i for i, c in enumerate(puzzle["choices"])
