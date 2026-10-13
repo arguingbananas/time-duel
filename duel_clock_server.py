@@ -47,7 +47,7 @@ _puzzle_ids = itertools.count(1)
 # which is fine, it's just an extra wrong option.
 SHAPE_TYPES = ["square", "rectangle", "diamond", "triangle",
                "hexagon", "octagon", "circle", "cross"]
-COLORS = ["#4caf6b", "#c14ccb", "#e0c93c", "#e0577a"]
+COLORS = ["#2e7d32", "#7b1fa2", "#c62828", "#00838f", "#ad1457"]
 
 
 _mock_time = None
