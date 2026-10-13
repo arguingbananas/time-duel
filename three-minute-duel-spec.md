@@ -23,7 +23,7 @@ The application is intentionally self-contained and dependency-free: it's a sing
 
 | Rule | Behavior |
 |---|---|
-| Starting time | Fixed at **3 minutes** per player (`GAME_MINUTES = 3`), not configurable through the UI. |
+| Starting time | Fixed at **2 minutes** per player (`GAME_MINUTES = 2`), not configurable through the UI. |
 | Player assignment | Automatic. The first phone to load the page becomes **Player 1**; the second becomes **Player 2**. No manual role picker. |
 | Turn order | Player 1 always moves first once the game is started. |
 | Passing your turn | You must answer a visual puzzle correctly (see §3). A correct answer immediately passes the active turn to your opponent. |
@@ -164,9 +164,9 @@ All endpoints return JSON. `POST` endpoints accept a JSON body (may be empty `{}
 ```json
 {
   "status": "active",
-  "totalMs": 180000,
-  "p1RemainingMs": 142300,
-  "p2RemainingMs": 158900,
+  "totalMs": 120000,
+  "p1RemainingMs": 92300,
+  "p2RemainingMs": 108900,
   "activePlayer": "p1",
   "turnStartedAt": 1732000000000,
   "p1Taken": true,

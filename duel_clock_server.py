@@ -29,7 +29,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 LOCK = threading.Lock()
 WRONG_PENALTY_MS = 2000
-GAME_MINUTES = 3
+GAME_MINUTES = 2
 NUM_CHOICES = 5
 ROTATION_INTERVAL_MS = 2000
 # TODO: Consider adjusting rotation speed as time runs low
