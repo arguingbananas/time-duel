@@ -104,37 +104,37 @@ class TestGetCurrentMissingIndex(unittest.TestCase):
 
     def test_after_one_rotation(self):
         puzzle = {"shapeType": "square", "missingIndex": 0, "rotationIndex": 0, "rotationStartedAt": self.base_time}
-        srv._mock_time = self.base_time + 4000
+        srv._mock_time = self.base_time + 2000
         self.assertEqual(srv.get_current_missing_index(puzzle), 1)
 
     def test_after_two_rotations(self):
         puzzle = {"shapeType": "square", "missingIndex": 0, "rotationIndex": 0, "rotationStartedAt": self.base_time}
-        srv._mock_time = self.base_time + 8000
+        srv._mock_time = self.base_time + 4000
         self.assertEqual(srv.get_current_missing_index(puzzle), 2)
 
     def test_after_three_rotations(self):
         puzzle = {"shapeType": "square", "missingIndex": 0, "rotationIndex": 0, "rotationStartedAt": self.base_time}
-        srv._mock_time = self.base_time + 12000
+        srv._mock_time = self.base_time + 6000
         self.assertEqual(srv.get_current_missing_index(puzzle), 3)
 
     def test_after_four_rotations_cycles(self):
         puzzle = {"shapeType": "square", "missingIndex": 0, "rotationIndex": 0, "rotationStartedAt": self.base_time}
-        srv._mock_time = self.base_time + 16000
+        srv._mock_time = self.base_time + 8000
         self.assertEqual(srv.get_current_missing_index(puzzle), 0)
 
     def test_wraps_correctly_from_nonzero_missing(self):
         puzzle = {"shapeType": "square", "missingIndex": 3, "rotationIndex": 0, "rotationStartedAt": self.base_time}
-        srv._mock_time = self.base_time + 4000
+        srv._mock_time = self.base_time + 2000
         self.assertEqual(srv.get_current_missing_index(puzzle), 0)
 
     def test_interior_rotation_count(self):
         puzzle = {"shapeType": "square", "missingIndex": 1, "rotationIndex": 0, "rotationStartedAt": self.base_time}
-        srv._mock_time = self.base_time + 6000
+        srv._mock_time = self.base_time + 3000
         self.assertEqual(srv.get_current_missing_index(puzzle), 2)
 
     def test_with_nonzero_rotation_index(self):
         puzzle = {"shapeType": "square", "missingIndex": 0, "rotationIndex": 2, "rotationStartedAt": self.base_time}
-        srv._mock_time = self.base_time + 4000
+        srv._mock_time = self.base_time + 2000
         self.assertEqual(srv.get_current_missing_index(puzzle), 3)
 
     def test_triangle_does_not_rotate(self):

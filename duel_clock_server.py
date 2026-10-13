@@ -31,7 +31,7 @@ LOCK = threading.Lock()
 WRONG_PENALTY_MS = 2000
 GAME_MINUTES = 3
 NUM_CHOICES = 5
-ROTATION_INTERVAL_MS = 4000
+ROTATION_INTERVAL_MS = 2000
 # TODO: Consider adjusting rotation speed as time runs low
 
 # Shapes whose pieces don't map onto each other under a 90-degree turn (the

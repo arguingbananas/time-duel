@@ -69,7 +69,7 @@ Shapes are drawn as inline SVG using hardcoded path data per shape type (defined
 
 ### 3.4 Rotation mechanic
 
-After each puzzle is generated, the shape rotates 90° every 4 seconds (`ROTATION_INTERVAL_MS = 4000`). The gap position shifts with each rotation, so the correct answer changes dynamically — the client must track which piece index currently aligns with the gap, not just the initial `missingIndex`.
+After each puzzle is generated, the shape rotates 90° every 2 seconds (`ROTATION_INTERVAL_MS = 2000`). The gap position shifts with each rotation, so the correct answer changes dynamically — the client must track which piece index currently aligns with the gap, not just the initial `missingIndex`.
 
 - The triangle (`"triangle"`) is the only **non-rotating** shape (`NON_ROTATING_SHAPES = {"triangle"}`), because its four pieces do not map onto each other under 90° turns (the inverted centre piece stays put).
 - The server calculates the current gap position server-side via `get_current_missing_index()`, which adds the elapsed rotation count to the original `missingIndex` modulo 4.
@@ -187,7 +187,7 @@ All endpoints return JSON. `POST` endpoints accept a JSON body (may be empty `{}
     "rotates": true,
     "rotationIndex": 0,
     "rotationStartedAt": 1732000000000,
-    "rotationIntervalMs": 4000
+    "rotationIntervalMs": 2000
   },
   "serverNow": 1732000012345
 }
