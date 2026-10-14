@@ -328,8 +328,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #puzzleShape { width: 32vw; max-width: 175px; margin-bottom: 20px; }
   #puzzleShape svg { width: 100%; height: auto; display: block; overflow: visible; transition: transform 0.5s ease-in-out; }
   #puzzleChoices { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; max-width: 340px; }
-  .choiceTile { width: 54px; height: 54px; border-radius: 14px; border: none; background: rgba(0,0,0,0.18); padding: 7px; display: flex; align-items: center; justify-content: center; flex: 0 0 auto; }
-  .choiceTile:active { background: rgba(0,0,0,0.32); }
+  .choiceTile { width: 54px; height: 54px; border-radius: 14px; border: none; background: #000; padding: 7px; display: flex; align-items: center; justify-content: center; flex: 0 0 auto; }
+  .choiceTile:active { background: #333; }
   .choiceTile svg { width: 100%; height: 100%; overflow: visible; }
   #penaltyToast { position: absolute; top: 40%; left: 50%; transform: translate(-50%, -50%) scale(0.9); font-family: Georgia, serif; font-size: 34px; color: #ffb4a8; opacity: 0; pointer-events: none; transition: opacity 0.15s ease, transform 0.15s ease; }
   #penaltyToast.show { opacity: 1; transform: translate(-50%, -50%) scale(1); }
