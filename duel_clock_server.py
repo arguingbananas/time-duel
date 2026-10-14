@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Three Minute Duel -- a tiny local web server for a two-player chess-clock
+Time Duel -- a tiny local web server for a two-player chess-clock
 game. Fixed 3-minute clock for each player. Whoever's phone loads the page
 first automatically becomes Player 1, the second becomes Player 2 -- no
 setup screen. To pass your turn you're shown a geometric shape split into
@@ -281,7 +281,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<title>Three Minute Duel</title>
+<title>Time Duel</title>
 <style>
   :root {
     --paper: #f3ede3;
@@ -344,7 +344,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <div id="app">
 
   <div class="screen show" id="claiming">
-    <div class="eyebrow">Three Minute Duel</div>
+    <div class="eyebrow">Time Duel</div>
     <h1>Last to answer loses.</h1>
     <p class="sub" id="claimingSub">Loading&hellip;</p>
     <div class="dots"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
@@ -806,7 +806,7 @@ if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     ip = lan_ip()
-    print("Three Minute Duel is running.")
+    print("Time Duel is running.")
     print("  On this machine:  http://localhost:%d" % port)
     print("  On your phones:   http://%s:%d" % (ip, port))
     print("  (Both phones need to be on the same Wi-Fi network as this machine.)")

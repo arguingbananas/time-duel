@@ -1,4 +1,4 @@
-# Three Minute Duel — Application Specification
+# Time Duel — Application Specification
 
 **A local, two-phone chess-clock dueling game with a jigsaw-puzzle turn mechanic.**
 
@@ -6,7 +6,7 @@
 
 ## 1. Overview
 
-Three Minute Duel is a two-player game played on two separate iPhones (or any phones/browsers), connected to a single small web server run on a local machine (e.g. an Ubuntu box) over the LAN. Each player has their own countdown clock, starting at a fixed 3 minutes. Players alternate turns; on your turn, you must correctly solve a small visual puzzle to pass the clock to your opponent. The loser is whoever's clock reaches zero first.
+Time Duel is a two-player game played on two separate iPhones (or any phones/browsers), connected to a single small web server run on a local machine (e.g. an Ubuntu box) over the LAN. Each player has their own countdown clock, starting at a fixed 3 minutes. Players alternate turns; on your turn, you must correctly solve a small visual puzzle to pass the clock to your opponent. The loser is whoever's clock reaches zero first.
 
 The application is intentionally self-contained and dependency-free: it's a single Python file using only the standard library, requiring no installation step (`pip install`) and no internet access to run. Puzzle graphics are generated as inline SVG in the browser rather than fetched as image assets.
 
