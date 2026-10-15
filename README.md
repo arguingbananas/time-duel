@@ -19,7 +19,7 @@ The server prints a `localhost` URL and a LAN URL. Open the LAN URL on both phon
 - On your turn: a shape with a missing piece rotates 90° every 2 seconds; pick the tile that fits the gap *as it currently points*.
 - While you wait, your phone shows a live spectator view of your opponent's puzzle, their misses, and a time lead bar.
 
-Full details in [three-minute-duel-spec.md](three-minute-duel-spec.md).
+Full details in [time-duel-spec.md](time-duel-spec.md).
 
 ## Tests
 
