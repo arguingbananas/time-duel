@@ -21,6 +21,10 @@ The server prints a `localhost` URL and a LAN URL. Open the LAN URL on both phon
 
 Full details in [time-duel-spec.md](time-duel-spec.md).
 
+## Security
+
+**None.** There is zero security implemented: no authentication, no HTTPS, no rate limiting, and anyone on the LAN can join or interfere with a game. This is a demo toy — run it only on a trusted local network.
+
 ## Tests
 
 ```bash
