@@ -1,6 +1,6 @@
 # Time Duel
 
-A local, two-phone chess-clock dueling game with a jigsaw-puzzle turn mechanic. Two players open the same page on their own phones, each gets a 2-minute countdown, and turns alternate by correctly solving a "which piece fills the gap?" shape puzzle. Wrong answers cost 2 seconds. The first clock to hit zero loses.
+A local, two-phone chess-clock dueling game with a jigsaw-puzzle turn mechanic.¹ Two players open the same page on their own phones, each gets a 2-minute countdown, and turns alternate by correctly solving a "which piece fills the gap?" shape puzzle. Wrong answers cost 2 seconds. The first clock to hit zero loses.
 
 Single Python file, embedded HTML/JS client, zero dependencies — nothing to `pip install`, no internet needed, all graphics are inline SVG.
 
@@ -30,3 +30,7 @@ python3 -m pytest test_duel_clock_server.py
 ## License
 
 Released under the [MIT License](LICENSE).
+
+---
+
+¹ The entire project — concept, specification, and code — was an original human idea written by an artificial intelligence.
