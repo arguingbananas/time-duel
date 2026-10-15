@@ -158,6 +158,9 @@ class TestGameFlow(unittest.TestCase):
         self.assertEqual(s["status"], "claiming")
         self.assertIsNone(s["activePlayer"])
         self.assertIsNone(s["puzzle"])
+        self.assertEqual(s["p1Misses"], 0)
+        self.assertEqual(s["p2Misses"], 0)
+        self.assertEqual(s["penaltyMs"], srv.WRONG_PENALTY_MS)
 
     def test_join_p1(self):
         result, _ = srv.do_join()
@@ -272,6 +275,57 @@ class TestGameFlow(unittest.TestCase):
             result, _ = srv.do_answer("p1", correct_slot)
             self.assertEqual(result["activePlayer"], "p2")
 
+    def _find_wrong_choice(self, puzzle):
+        current_missing = srv.get_current_missing_index(puzzle)
+        wrong_choices = [
+            i for i, c in enumerate(puzzle["choices"])
+            if c["pieceIndex"] != current_missing or c["shapeType"] != puzzle["shapeType"]
+        ]
+        self.assertTrue(len(wrong_choices) > 0, "No wrong choice found")
+        return wrong_choices[0]
+
+    def test_wrong_answer_increments_miss_counter(self):
+        srv.do_join()
+        srv.do_join()
+        start_state = srv.do_start()[0]
+        wrong_idx = self._find_wrong_choice(start_state["puzzle"])
+        result, _ = srv.do_answer("p1", wrong_idx)
+        self.assertEqual(result["p1Misses"], 1)
+        self.assertEqual(result["p2Misses"], 0)
+        wrong_idx = self._find_wrong_choice(result["puzzle"])
+        result, _ = srv.do_answer("p1", wrong_idx)
+        self.assertEqual(result["p1Misses"], 2)
+
+    def test_correct_answer_does_not_increment_miss_counter(self):
+        srv.do_join()
+        srv.do_join()
+        start_state = srv.do_start()[0]
+        puzzle = start_state["puzzle"]
+        current_missing = srv.get_current_missing_index(puzzle)
+        matching = [
+            i for i, c in enumerate(puzzle["choices"])
+            if c["pieceIndex"] == current_missing and c["shapeType"] == puzzle["shapeType"]
+        ]
+        self.assertTrue(len(matching) > 0, "No matching choice found")
+        result, _ = srv.do_answer("p1", matching[0])
+        self.assertEqual(result["p1Misses"], 0)
+        self.assertEqual(result["p2Misses"], 0)
+
+    def test_new_game_resets_miss_counters(self):
+        srv.do_join()
+        srv.do_join()
+        start_state = srv.do_start()[0]
+        wrong_idx = self._find_wrong_choice(start_state["puzzle"])
+        srv.do_answer("p1", wrong_idx)
+        self.assertEqual(srv.STATE["p1Misses"], 1)
+        # force the game over so /new actually resets
+        srv.STATE["p1RemainingMs"] = 0
+        srv.do_new()
+        s = srv.snapshot()
+        self.assertEqual(s["status"], "claiming")
+        self.assertEqual(s["p1Misses"], 0)
+        self.assertEqual(s["p2Misses"], 0)
+
 
 class TestHttpEndpoints(unittest.TestCase):
     @classmethod
@@ -314,6 +368,9 @@ class TestHttpEndpoints(unittest.TestCase):
         s = self._get("/state")
         self.assertIn("status", s)
         self.assertIn("serverNow", s)
+        self.assertIn("penaltyMs", s)
+        self.assertIn("p1Misses", s)
+        self.assertIn("p2Misses", s)
 
     def test_get_unknown_path(self):
         s = self._get("/nonexistent")

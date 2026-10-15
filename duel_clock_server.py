@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Time Duel -- a tiny local web server for a two-player chess-clock
-game. Fixed 3-minute clock for each player. Whoever's phone loads the page
+game. Fixed 2-minute clock for each player. Whoever's phone loads the page
 first automatically becomes Player 1, the second becomes Player 2 -- no
 setup screen. To pass your turn you're shown a geometric shape split into
 four parts with one part missing, and you pick the piece that completes it
@@ -133,6 +133,8 @@ def default_state():
         "turnStartedAt": None,
         "p1Taken": False,
         "p2Taken": False,
+        "p1Misses": 0,
+        "p2Misses": 0,
         "winner": None,
         "puzzle": None,
     }
@@ -180,6 +182,7 @@ def snapshot():
             # No answer field: the client works out which slot is correct
             # from the rotation, and the server re-checks every answer.
         }
+    s["penaltyMs"] = WRONG_PENALTY_MS
     s["serverNow"] = now_ms()
     return s
 
@@ -251,6 +254,7 @@ def do_answer(role, choice, puzzle_id=None):
             correct = False
 
         if not correct:
+            STATE[role + "Misses"] += 1
             STATE[key] = max(0, STATE[key] - WRONG_PENALTY_MS)
 
         if STATE[key] <= 0:
@@ -328,11 +332,37 @@ INDEX_HTML = r"""<!DOCTYPE html>
   #puzzleShape { width: 32vw; max-width: 175px; margin-bottom: 20px; }
   #puzzleShape svg { width: 100%; height: auto; display: block; overflow: visible; transition: transform 0.5s ease-in-out; }
   #puzzleChoices { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; max-width: 340px; }
-  .choiceTile { width: 54px; height: 54px; border-radius: 14px; border: none; background: #000; padding: 7px; display: flex; align-items: center; justify-content: center; flex: 0 0 auto; }
-  .choiceTile:active { background: #333; }
+  .choiceTile { width: 54px; height: 54px; border-radius: 14px; border: none; background: #f3ede3; padding: 7px; display: flex; align-items: center; justify-content: center; flex: 0 0 auto; }
+  .choiceTile:active { background: #d8d0c2; }
   .choiceTile svg { width: 100%; height: 100%; overflow: visible; }
   #penaltyToast { position: absolute; top: 40%; left: 50%; transform: translate(-50%, -50%) scale(0.9); font-family: Georgia, serif; font-size: 34px; color: #ffb4a8; opacity: 0; pointer-events: none; transition: opacity 0.15s ease, transform 0.15s ease; }
   #penaltyToast.show { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  /* spectator view: shown to the player who is waiting */
+  #watchPanel, #leadBar { display: none; }
+  #gameInner.watching { justify-content: flex-start; }
+  #gameInner.watching #oppRow { display: none; }
+  #gameInner.watching #watchPanel { display: flex; flex: 1.25 1 0; width: 100%; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: calc(env(safe-area-inset-top, 0px) + 24px) 20px 12px; }
+  #gameInner.watching #leadBar { display: flex; align-items: center; gap: 10px; width: 100%; height: 34px; padding: 0 20px; background: #16130d; color: #f3ede3; font-size: 12px; flex: 0 0 auto; }
+  #gameInner.watching #waitingWrap { flex: 1 1 0; justify-content: center; }
+  #watchTop { display: flex; justify-content: space-between; align-items: baseline; width: 100%; max-width: 360px; font-size: 14px; }
+  #watchClock { font-family: Georgia, serif; font-size: 34px; font-variant-numeric: tabular-nums; }
+  #watchPlate { position: relative; background: #f3ede3; border-radius: 24px; padding: 12px; }
+  #watchShape { position: relative; width: min(52vw, 26vh, 230px); height: min(52vw, 26vh, 230px); }
+  .wRing, .wShape { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+  .wShape { transition: transform 0.5s ease-in-out; }
+  #watchInfo { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+  #watchPill, #watchMisses { font-size: 13px; background: rgba(0,0,0,0.3); border-radius: 14px; padding: 5px 14px; transition: background 0.15s ease; }
+  #watchMisses.miss { background: #c62828; }
+  @keyframes shake { 0%, 100% { transform: translateX(0); } 20% { transform: translateX(-7px); } 40% { transform: translateX(6px); } 60% { transform: translateX(-4px); } 80% { transform: translateX(3px); } }
+  #watchPlate.miss { animation: shake 0.4s ease; box-shadow: 0 0 0 4px #ff6b5e; }
+  #missToast { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-family: Georgia, serif; font-size: 48px; color: #c62828; background: rgba(243,237,227,0.6); border-radius: 24px; opacity: 0; pointer-events: none; transition: opacity 0.15s ease; }
+  #missToast.miss { opacity: 1; }
+  #watchPill:empty { display: none; }
+  #watchChoices { display: flex; gap: 8px; }
+  .watchTile { width: 40px; height: 40px; border-radius: 11px; background: #f3ede3; padding: 6px; display: flex; align-items: center; justify-content: center; }
+  .watchTile svg { width: 100%; height: 100%; overflow: visible; }
+  #leadTrack { flex: 1; height: 8px; border-radius: 4px; overflow: hidden; }
+  #leadFill { height: 100%; width: 50%; }
   #resultOverlay { position: fixed; inset: 0; background: rgba(20,10,10,0.94); color: var(--paper); display: none; flex-direction: column; align-items: center; justify-content: center; text-align: center; z-index: 20; padding: 24px; }
   #resultOverlay.show { display: flex; }
   #resultOverlay .eyebrow2 { font-size: 14px; opacity: 0.6; margin-bottom: 10px; }
@@ -360,9 +390,16 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
   <div class="screen" id="game">
     <div id="gameInner">
-      <div id="oppRow"><div id="oppLabel">Opponent</div><div id="oppTime">3:00</div></div>
+      <div id="watchPanel">
+        <div id="watchTop"><span>Opponent solving&hellip;</span><span id="watchClock">2:00</span></div>
+        <div id="watchPlate"><div id="watchShape"></div><div id="missToast"></div></div>
+        <div id="watchInfo"><div id="watchPill"></div><div id="watchMisses">No misses yet</div></div>
+        <div id="watchChoices"></div>
+      </div>
+      <div id="leadBar"><span id="leadMine">You 2:00</span><div id="leadTrack"><div id="leadFill"></div></div><span id="leadOpp">2:00 Opp</span></div>
+      <div id="oppRow"><div id="oppLabel">Opponent</div><div id="oppTime">2:00</div></div>
       <div id="waitingWrap">
-        <div id="myClock">3:00</div>
+        <div id="myClock">2:00</div>
         <div id="myStatus">waiting&hellip;</div>
         <div id="puzzleArea">
           <div id="puzzleShape"></div>
@@ -538,6 +575,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
   function onState(state) {
     lastState = state;
     frameStart = Date.now();  // when this state arrived; clocks extrapolate from here
+    if (state.status === 'claiming' || state.status === 'ready') {
+      myClockEl.textContent = fmt(state.totalMs);
+      oppTimeEl.textContent = fmt(state.totalMs);
+    }
     if (state.status !== 'gameover') {
       document.getElementById('resultOverlay').classList.remove('show');
     }
@@ -564,12 +605,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
       if (!myRole) { showScreen('claiming'); return; }
       showScreen('game');
       renderPuzzle(state);
+      renderWatch(state);
       startTicking();
     } else if (state.status === 'gameover') {
       if (!myRole) { showScreen('claiming'); return; }
       showScreen('game');
       stopTicking();
       puzzleArea.classList.remove('show');
+      gameInner.classList.remove('watching');
       renderOnce(state);
       var won = state.winner === myRole;
       document.getElementById('resultText').textContent = won ? 'You win' : 'You lose';
@@ -609,6 +652,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
 
   var lastRotationAngle = 0;
+  var lastWatchAngle = 0, lastWatchKey = null, watchArc = null, lastOppMisses = null, missTimer = null;
 
   // Best guess at the server's clock right now: the timestamp that arrived
   // with the last state, plus however long ago it arrived.
@@ -620,16 +664,17 @@ INDEX_HTML = r"""<!DOCTYPE html>
   // turning forward instead of spinning back 270 degrees at the wrap.
   function getRotationAngle(puzzle) {
     if (!puzzle || !puzzle.rotates || !puzzle.rotationStartedAt) return 0;
-    var interval = puzzle.rotationIntervalMs || 4000;
+    var interval = puzzle.rotationIntervalMs || 2000;
     var steps = Math.max(0, Math.floor((estServerNow() - puzzle.rotationStartedAt) / interval));
     return ((puzzle.rotationIndex || 0) + steps) * 90;
   }
 
-  function updateRotation(puzzle) {
+  // sel is given for the spectator view (opponent's puzzle), omitted for your own.
+  function updateRotation(puzzle, sel) {
     var angle = getRotationAngle(puzzle);
-    if (angle === lastRotationAngle) return;
-    lastRotationAngle = angle;
-    var svg = document.querySelector('#puzzleShape svg');
+    if (angle === (sel ? lastWatchAngle : lastRotationAngle)) return;
+    if (sel) lastWatchAngle = angle; else lastRotationAngle = angle;
+    var svg = document.querySelector(sel || '#puzzleShape svg');
     if (svg) svg.style.transform = 'rotate(' + angle + 'deg)';
   }
 
@@ -671,6 +716,107 @@ INDEX_HTML = r"""<!DOCTYPE html>
     updateRotation(p);
   }
 
+  // ---- spectator view: what the waiting player sees of the opponent's puzzle ----
+  var RING_R = { square: 76, rectangle: 90, diamond: 51, triangle: 51, hexagon: 51, octagon: 51, circle: 51, cross: 48 };
+  var INK = '#16211f';
+
+  // Ring (static, shows time to next turn) + shape (rotates), both in a square
+  // viewBox centred on the shape so CSS rotation turns it about its middle.
+  function watchSvgs(p) {
+    var d = SHAPE_DATA[p.shapeType];
+    var vb = d.viewBox.split(' ');
+    var cx = +vb[2] / 2, cy = +vb[3] / 2;
+    var r = RING_R[p.shapeType] || 51, half = r + 6;
+    var box = (cx - half) + ' ' + (cy - half) + ' ' + (2 * half) + ' ' + (2 * half);
+    var ring = '';
+    if (p.rotates) {
+      ring = '<svg class="wRing" viewBox="' + box + '">' +
+        '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="none" stroke="' + INK + '" stroke-opacity="0.15" stroke-width="2"/>' +
+        '<circle id="ringArc" cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="none" stroke="' + INK + '" stroke-width="3" stroke-linecap="round" pathLength="100" stroke-dasharray="0 100" transform="rotate(-90 ' + cx + ' ' + cy + ')"/></svg>';
+    }
+    var shape = '<svg class="wShape" viewBox="' + box + '">';
+    d.pieces.forEach(function(path, i) {
+      if (i === p.missingIndex) {
+        shape += '<path d="' + path + '" fill="rgba(0,0,0,0.06)" stroke="' + INK + '" stroke-width="1.5" stroke-dasharray="3,2"/>';
+      } else {
+        shape += '<path d="' + path + '" fill="' + p.color + '"/>';
+      }
+    });
+    return ring + shape + '</svg>';
+  }
+
+  // The opponent just missed: shake the plate, flash the penalty, light the counter.
+  function flashMiss(penaltyMs) {
+    var els = [document.getElementById('watchPlate'), document.getElementById('missToast'), document.getElementById('watchMisses')];
+    document.getElementById('missToast').textContent = '\u2212' + (penaltyMs / 1000) + 's';
+    if (missTimer) clearTimeout(missTimer);
+    els.forEach(function(el) { el.classList.remove('miss'); });
+    void els[0].offsetWidth;   // restart the animation if misses come back to back
+    els.forEach(function(el) { el.classList.add('miss'); });
+    missTimer = setTimeout(function() {
+      els.forEach(function(el) { el.classList.remove('miss'); });
+      missTimer = null;
+    }, 600);
+  }
+
+  function renderWatch(state) {
+    var p = state.puzzle;
+    var watching = state.status === 'active' && state.activePlayer !== myRole && !!p;
+    gameInner.classList.toggle('watching', watching);
+    if (!watching) { lastWatchKey = null; watchArc = null; return; }
+
+    var oppDark = myRole === 'p1' ? 'var(--p2-dark)' : 'var(--p1-dark)';
+    var mineBright = myRole === 'p1' ? 'var(--p1)' : 'var(--p2)';
+    document.getElementById('watchPanel').style.background = oppDark;
+    document.getElementById('leadTrack').style.background = oppDark;
+    document.getElementById('leadFill').style.background = mineBright;
+
+    // Opponent's misses and what they've cost them (a miss is a fixed penalty).
+    var oppMisses = (myRole === 'p1' ? state.p2Misses : state.p1Misses) || 0;
+    var penalty = state.penaltyMs || 2000;
+    document.getElementById('watchMisses').textContent = oppMisses
+      ? 'Misses ' + oppMisses + ' \u00b7 \u2212' + (oppMisses * penalty / 1000) + 's'
+      : 'No misses yet';
+    if (lastOppMisses !== null && oppMisses > lastOppMisses) flashMiss(penalty);
+    lastOppMisses = oppMisses;
+
+    var key = p.id + '|' + p.shapeType + '|' + p.color + '|' + p.missingIndex;
+    if (key === lastWatchKey) return;   // same puzzle: leave the DOM (and animation) alone
+    lastWatchKey = key;
+    lastWatchAngle = 0;
+
+    document.getElementById('watchShape').innerHTML = watchSvgs(p);
+    watchArc = document.getElementById('ringArc');
+    var choicesEl = document.getElementById('watchChoices');
+    choicesEl.innerHTML = '';
+    p.choices.forEach(function(c) {
+      var t = document.createElement('div');
+      t.className = 'watchTile';
+      t.innerHTML = pieceTileSvg(c.shapeType, c.pieceIndex, p.color);
+      choicesEl.appendChild(t);
+    });
+    document.getElementById('watchPill').textContent =
+      p.rotates ? 'Rotates every ' + ((p.rotationIntervalMs || 2000) / 1000) + 's' : '';
+    updateRotation(p, '.wShape');
+  }
+
+  // Per-frame bits of the spectator view: clocks, lead bar, rotation ring.
+  function updateWatchHud(r) {
+    var myR = Math.max(0, myRole === 'p1' ? r.p1r : r.p2r);
+    var oppR = Math.max(0, myRole === 'p1' ? r.p2r : r.p1r);
+    document.getElementById('watchClock').textContent = fmt(oppR);
+    document.getElementById('leadMine').textContent = 'You ' + fmt(myR);
+    document.getElementById('leadOpp').textContent = fmt(oppR) + ' Opp';
+    var total = myR + oppR;
+    document.getElementById('leadFill').style.width = (total > 0 ? Math.round(1000 * myR / total) / 10 : 50) + '%';
+    var p = lastState.puzzle;
+    if (watchArc && p && p.rotates) {
+      var iv = p.rotationIntervalMs || 2000;
+      var frac = (((estServerNow() - p.rotationStartedAt) % iv) + iv) % iv / iv;
+      watchArc.setAttribute('stroke-dasharray', (frac * 100).toFixed(1) + ' 100');
+    }
+  }
+
   function submitAnswer(choiceSlot, puzzleId) {
     if (!lastState || lastState.status !== 'active' || lastState.activePlayer !== myRole) return;
     if (lastState.puzzle && lastState.puzzle.id !== puzzleId) return;  // stale tile
@@ -703,10 +849,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
       myClockEl.textContent = fmt(Math.max(0, myR));
       oppTimeEl.textContent = fmt(Math.max(0, oppR));
       oppLabelEl.textContent = !myTurn ? "Opponent \u2014 their turn" : "Opponent";
-      myStatusEl.textContent = myTurn ? 'pick the missing piece' : 'waiting on opponent';
+      myStatusEl.textContent = myTurn ? 'pick the missing piece' : "you're up next";
       applyColors(lastState, myTurn);
 
-      if (myTurn && lastState.puzzle) updateRotation(lastState.puzzle);
+      if (lastState.puzzle) {
+        if (myTurn) updateRotation(lastState.puzzle);
+        else { updateRotation(lastState.puzzle, '.wShape'); updateWatchHud(r); }
+      }
 
       rafHandle = requestAnimationFrame(frame);
     }

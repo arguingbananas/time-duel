@@ -6,7 +6,7 @@
 
 ## 1. Overview
 
-Time Duel is a two-player game played on two separate iPhones (or any phones/browsers), connected to a single small web server run on a local machine (e.g. an Ubuntu box) over the LAN. Each player has their own countdown clock, starting at a fixed 3 minutes. Players alternate turns; on your turn, you must correctly solve a small visual puzzle to pass the clock to your opponent. The loser is whoever's clock reaches zero first.
+Time Duel is a two-player game played on two separate iPhones (or any phones/browsers), connected to a single small web server run on a local machine (e.g. an Ubuntu box) over the LAN. Each player has their own countdown clock, starting at a fixed 2 minutes. Players alternate turns; on your turn, you must correctly solve a small visual puzzle to pass the clock to your opponent. The loser is whoever's clock reaches zero first. While your opponent is solving, your phone shows a live spectator view of their puzzle, their miss count, and a lead bar comparing both clocks.
 
 The application is intentionally self-contained and dependency-free: it's a single Python file using only the standard library, requiring no installation step (`pip install`) and no internet access to run. Puzzle graphics are generated as inline SVG in the browser rather than fetched as image assets.
 
@@ -27,7 +27,7 @@ The application is intentionally self-contained and dependency-free: it's a sing
 | Player assignment | Automatic. The first phone to load the page becomes **Player 1**; the second becomes **Player 2**. No manual role picker. |
 | Turn order | Player 1 always moves first once the game is started. |
 | Passing your turn | You must answer a visual puzzle correctly (see §3). A correct answer immediately passes the active turn to your opponent. |
-| Wrong answer penalty | A wrong answer costs the active player **2 seconds** (`WRONG_PENALTY_MS = 2000`) off their own remaining time. The turn does **not** pass — the same player is shown a new puzzle and must try again. |
+| Wrong answer penalty | A wrong answer costs the active player **2 seconds** (`WRONG_PENALTY_MS = 2000`) off their own remaining time and increments their visible miss count (`p1Misses`/`p2Misses`). The turn does **not** pass — the same player is shown a new puzzle and must try again. |
 | Losing condition | A player's remaining time reaching zero (whether from normal countdown or a penalty) ends the game immediately. That player loses; the other wins. |
 | Time enforcement | Judged server-side against the server's own clock at every request (see §5.3) — a tap that arrives after time has already expired has no effect. There is no way to "sneak" a late answer through. |
 | Rematch | "Play again" resets the whole game: both role claims are released and a new player-assignment race begins. |
@@ -110,11 +110,12 @@ To avoid needing synchronized clocks between the server and each phone:
 | Field | Type | Description |
 |---|---|---|
 | `status` | enum string | One of `claiming`, `ready`, `active`, `gameover`. |
-| `totalMs` | int | Starting time per player, in milliseconds (`3 * 60 * 1000`). |
+| `totalMs` | int | Starting time per player, in milliseconds (`GAME_MINUTES * 60 * 1000`). |
 | `p1RemainingMs` / `p2RemainingMs` | int | Remaining time for each player, in ms. |
 | `activePlayer` | `"p1"` \| `"p2"` \| `null` | Whose clock is currently running. |
 | `turnStartedAt` | int (epoch ms) \| `null` | Server timestamp when the current turn began. |
 | `p1Taken` / `p2Taken` | bool | Whether each role has been claimed by a phone. |
+| `p1Misses` / `p2Misses` | int | Number of wrong answers each player has given this game (shown to the waiting player's spectator view). |
 | `winner` | `"p1"` \| `"p2"` \| `null` | Set once the game ends. |
 | `puzzle` | object \| `null` | The current puzzle (see §5.2). Regenerated on every turn pass and on every wrong answer. |
 
@@ -133,7 +134,7 @@ Internal (server-only) fields are marked; everything else is included in the pub
 | `rotates` | bool | public | `false` for shapes in `NON_ROTATING_SHAPES` (currently only `"triangle"`); `true` otherwise. |
 | `rotationIndex` | int | public | The rotation count when this puzzle was created (always `0` for newly generated puzzles). |
 | `rotationStartedAt` | int (epoch ms) | public | Server timestamp when the first rotation cycle began. |
-| `rotationIntervalMs` | int | public | Milliseconds between each 90° rotation (always `4000`). |
+| `rotationIntervalMs` | int | public | Milliseconds between each 90° rotation (always `2000`). |
 
 ### 5.3 Server-authoritative time enforcement
 
@@ -148,7 +149,7 @@ This means a wrong-timed tap arriving after time has technically expired is eval
 
 ## 6. HTTP API
 
-All endpoints return JSON. `POST` endpoints accept a JSON body (may be empty `{}`). The server also returns `serverNow` (current server epoch ms) in every response for client-side clock interpolation.
+All endpoints return JSON. `POST` endpoints accept a JSON body (may be empty `{}`). The server also returns `serverNow` (current server epoch ms) in every response for client-side clock interpolation, along with `penaltyMs` (the wrong-answer penalty, so the client UI can label it without hardcoding).
 
 | Method & Path | Body | Purpose | Response highlights |
 |---|---|---|---|
@@ -171,6 +172,8 @@ All endpoints return JSON. `POST` endpoints accept a JSON body (may be empty `{}
   "turnStartedAt": 1732000000000,
   "p1Taken": true,
   "p2Taken": true,
+  "p1Misses": 1,
+  "p2Misses": 0,
   "winner": null,
   "puzzle": {
     "id": 1,
@@ -189,6 +192,7 @@ All endpoints return JSON. `POST` endpoints accept a JSON body (may be empty `{}
     "rotationStartedAt": 1732000000000,
     "rotationIntervalMs": 2000
   },
+  "penaltyMs": 2000,
   "serverNow": 1732000012345
 }
 ```
@@ -205,13 +209,25 @@ All endpoints return JSON. `POST` endpoints accept a JSON body (may be empty `{}
 |---|---|---|
 | **Claiming** | `status == "claiming"` | Auto-attempts `/join` on load; shows "You're Player N, waiting…" once claimed, or an error if the game is already full. |
 | **Ready** | `status == "ready"` | "Ready to duel" with a single **Start** button (either player can tap it). |
-| **Game** | `status == "active"` or `"gameover"` | The clock display, opponent's time, and (on your turn) the puzzle UI. On game-over, a full-screen result overlay with **Play again**. |
+| **Game** | `status == "active"` or `"gameover"` | On your turn: the clock display, opponent's time, and the puzzle UI. While the opponent is solving: the spectator view (see §7.3). On game-over, a full-screen result overlay with **Play again**. |
 
 ### 7.2 Role persistence
 
 The assigned role (`p1`/`p2`) is stored in `sessionStorage` per browser tab, so a page reload during the same game doesn't lose your seat. If the server's game state no longer shows your role as taken (e.g. after a reset), the client clears its stored role and re-attempts `/join` automatically.
 
-### 7.3 Visual/UX details
+### 7.3 Spectator view (waiting player)
+
+While the opponent is solving, the waiting player doesn't just see a static "waiting…" message — the client renders a live **spectator view** of the opponent's puzzle:
+
+- A "plate" showing the same shape-with-gap, rotating in sync with the server clock (same `serverNow` extrapolation technique as the active player's view).
+- A progress **ring** around the shape showing time remaining until the next 90° rotation (only for rotating shapes).
+- The opponent's five candidate tiles rendered below the plate (read-only).
+- A miss counter, e.g. "Misses 2 · −4s", computed from the opponent's `p1Misses`/`p2Misses` and the `penaltyMs` field. When the count increases between polls, the plate shakes, a large "−2s" toast flashes over it, and the counter flashes red.
+- A **lead bar** at the bottom of the screen comparing both players' remaining time proportionally, with each clock's digits on either side.
+
+All spectator data is derived from the normal `/state` poll — the opponent's `correctIndex` is never exposed, so the spectator sees the puzzle exactly as the solver does, with no answer hinting.
+
+### 7.4 Visual/UX details
 
 - The active player's screen background is a bright accent color (orange for P1, blue for P2); the waiting player's screen is a darker shade of the same color.
 - A wrong answer triggers a brief full-screen brightness dip plus a "−2 seconds" toast, then a new puzzle appears immediately.
