@@ -268,3 +268,4 @@ python3 duel_clock_server.py [port]
 | `test_duel_clock_server.py` | Unit tests for puzzle/rotation logic, game flow, and HTTP endpoints. |
 | `time-duel-spec.md` | This specification. |
 | `README.md` | Quick start and overview. |
+| `LICENSE` | MIT license. |

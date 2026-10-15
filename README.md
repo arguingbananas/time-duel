@@ -26,3 +26,7 @@ Full details in [time-duel-spec.md](time-duel-spec.md).
 ```bash
 python3 -m pytest test_duel_clock_server.py
 ```
+
+## License
+
+Released under the [MIT License](LICENSE).
