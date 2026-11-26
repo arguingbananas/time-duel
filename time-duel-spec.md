@@ -110,11 +110,13 @@ To avoid needing synchronized clocks between the server and each phone:
 | Field | Type | Description |
 |---|---|---|
 | `status` | enum string | One of `claiming`, `ready`, `active`, `gameover`. |
+| `gameId` | string | Random id, new for every game. A phone's seat belongs to one game; when it changes (Play again, server restart), the phone rejoins. |
 | `totalMs` | int | Starting time per player, in milliseconds (`GAME_MINUTES * 60 * 1000`). |
 | `p1RemainingMs` / `p2RemainingMs` | int | Remaining time for each player, in ms. |
 | `activePlayer` | `"p1"` \| `"p2"` \| `null` | Whose clock is currently running. |
 | `turnStartedAt` | int (epoch ms) \| `null` | Server timestamp when the current turn began. |
 | `p1Taken` / `p2Taken` | bool | Whether each role has been claimed by a phone. |
+| `p1Token` / `p2Token` | string \| `null` | **Server-only.** The random token given to the phone holding each seat. Never included in `/state`. |
 | `p1Misses` / `p2Misses` | int | Number of wrong answers each player has given this game (shown to the waiting player's spectator view). |
 | `winner` | `"p1"` \| `"p2"` \| `null` | Set once the game ends. |
 | `puzzle` | object \| `null` | The current puzzle (see §5.2). Regenerated on every turn pass and on every wrong answer. |
@@ -149,16 +151,18 @@ This means a wrong-timed tap arriving after time has technically expired is eval
 
 ## 6. HTTP API
 
-All endpoints return JSON. `POST` endpoints accept a JSON body (may be empty `{}`). The server also returns `serverNow` (current server epoch ms) in every response for client-side clock interpolation, along with `penaltyMs` (the wrong-answer penalty, so the client UI can label it without hardcoding).
+All endpoints return JSON. `POST` endpoints require `Content-Type: application/json` and a body of at most 1 KB (may be empty `{}`); anything else is refused (`415`, `413`, `400`). Requests whose `Host` header isn't an IP address, `localhost` or the computer's own name are refused (`403`); see §6.2. The server also returns `serverNow` (current server epoch ms) in every response for client-side clock interpolation, along with `penaltyMs` (the wrong-answer penalty, so the client UI can label it without hardcoding).
 
 | Method & Path | Body | Purpose | Response highlights |
 |---|---|---|---|
 | `GET /` | — | Serves the single-page HTML/CSS/JS app. | HTML |
 | `GET /state` | — | Polled every 250ms by each client. Returns the current game state (with `puzzle.correctIndex` stripped). | Full state snapshot |
-| `POST /join` | — | Auto-assigns the caller as `p1` (if free) or `p2` (if `p1` taken). Returns `409 {"error": "full"}` if both roles are already taken. | State snapshot + `yourRole` |
-| `POST /start` | — | Transitions `ready` → `active`; sets `activePlayer = "p1"`, starts the clock, generates the first puzzle. Rejected (`409`) unless `status == "ready"`. | State snapshot |
-| `POST /answer` | `{ "role": "p1"\|"p2", "choice": 0-4, "puzzleId": int }` | Submits an answer for the caller's puzzle. Validates `role == activePlayer`; rejects stale answers (mismatched `puzzleId`); validates against the **current** missing index (accounting for rotation); deducts elapsed time (and, if wrong, the 2000ms penalty); passes or retains the turn accordingly; generates a new puzzle. Rejected (`409`) if it isn't that role's turn. | State snapshot |
-| `POST /new` | — | Resets the entire game to a fresh `claiming` state (both roles released, clocks reset). Used for "Play again." | State snapshot |
+| `POST /join` | — | Auto-assigns the caller as `p1` (if free) or `p2` (if `p1` taken), with a new random token for that seat. Returns `409 {"error": "full"}` if both roles are already taken. | State snapshot + `yourRole`, `yourToken` |
+| `POST /start` | `{ "token": … }` | Either player's token. Transitions `ready` → `active`; sets `activePlayer = "p1"`, starts the clock, generates the first puzzle. Rejected (`409`) unless `status == "ready"`. | State snapshot |
+| `POST /answer` | `{ "token": …, "choice": 0-4, "puzzleId": int }` | Submits an answer for the caller's puzzle. The caller's role comes from the token (any `role` field is ignored). Validates `role == activePlayer`; rejects stale answers (mismatched `puzzleId`); validates against the **current** missing index (accounting for rotation); deducts elapsed time (and, if wrong, the 2000ms penalty); passes or retains the turn accordingly; generates a new puzzle. Rejected (`409`) if it isn't that role's turn. | State snapshot |
+| `POST /new` | `{ "token": … }` | Either player's token. Resets the entire game to a fresh `claiming` state (both roles released, clocks reset). Used for "Play again." | State snapshot |
+
+`/start`, `/answer` and `/new` return `403 {"error": "bad_token"}` without a valid token for the current game.
 
 ### 6.1 Example `/state` response (mid-game)
 
@@ -201,6 +205,17 @@ All endpoints return JSON. `POST` endpoints accept a JSON body (may be empty `{}
 
 ---
 
+### 6.2 Network protections
+
+The game assumes a trusted home network: no HTTPS and no password. Within that, the server:
+
+- **Knows which phone holds which seat.** `/join` gives each seat a random token (`secrets.token_urlsafe`), and every action is checked against it, so one phone can't answer, start or reset as the other. Tokens change with every new game.
+- **Accepts only small JSON requests** (`Content-Type: application/json`, at most 1 KB). A web page on another site can't send that to the server through a player's browser.
+- **Checks the `Host` header.** Only an IP address, `localhost` or the computer's own name is accepted, so another website can't reach the game through a player's browser by pointing its own domain name at this computer (DNS rebinding).
+- **Sends security headers:** `no-store`, `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, and on the page a Content-Security-Policy that allows the page's own inline script and styles and nothing from other servers.
+
+Anyone on the same network can still open the page, watch, and join a free seat.
+
 ## 7. Client-Side Behavior
 
 ### 7.1 Screens (state machine)
@@ -213,7 +228,7 @@ All endpoints return JSON. `POST` endpoints accept a JSON body (may be empty `{}
 
 ### 7.2 Role persistence
 
-The assigned role (`p1`/`p2`) is stored in `sessionStorage` per browser tab, so a page reload during the same game doesn't lose your seat. If the server's game state no longer shows your role as taken (e.g. after a reset), the client clears its stored role and re-attempts `/join` automatically.
+The assigned role (`p1`/`p2`), its token and the `gameId` are stored in `sessionStorage` per browser tab, so a page reload during the same game doesn't lose your seat. If the state's `gameId` differs from the stored one (Play again, or a server restart), or the server no longer shows your role as taken, the client forgets its seat and re-attempts `/join` automatically.
 
 ### 7.3 Spectator view (waiting player)
 
@@ -254,7 +269,7 @@ python3 duel_clock_server.py [port]
 
 - **Single game at a time.** The server holds one global `STATE` object; a third device loading the page while a game is in progress is rejected with a "game already in progress" message rather than starting a second concurrent game.
 - **No persistence.** All state is in-memory; restarting the server clears everything.
-- **No authentication.** Anyone on the LAN who can reach the port can join, view, or (via direct API calls) manipulate the game — acceptable for a casual local family game, not suitable for exposing beyond a trusted local network.
+- **Trusted network only.** There's no HTTPS and no password: anyone on the LAN can open the page, watch, and join a free seat (see §6.2 for what is protected). Not suitable for exposing beyond a trusted local network.
 - **No reconnect-to-spectate.** A third phone loading the page mid-game cannot spectate; it can only wait for the current game to end (via the "full" error) and then either sit out or trigger a new one indirectly by both original players hitting "Play again."
 - **Polling latency.** Turn-state changes on the *opponent's* screen may lag up to ~250ms behind the actual server-side event (your own actions update instantly via the direct POST response).
 

@@ -18,9 +18,11 @@ No dependencies beyond the Python standard library -- nothing to pip
 install, and no images fetched over the network (the shapes are drawn
 as SVG paths in the browser).
 """
+import ipaddress
 import itertools
 import json
 import random
+import secrets
 import socket
 import sys
 import threading
@@ -32,6 +34,7 @@ WRONG_PENALTY_MS = 2000
 GAME_MINUTES = 2
 NUM_CHOICES = 5
 ROTATION_INTERVAL_MS = 2000
+MAX_BODY_BYTES = 1024  # every request body is a tiny JSON object
 # TODO: Consider adjusting rotation speed as time runs low
 
 # Shapes whose pieces don't map onto each other under a 90-degree turn (the
@@ -126,6 +129,7 @@ def default_state():
     total = GAME_MINUTES * 60 * 1000
     return {
         "status": "claiming",   # claiming | ready | active | gameover
+        "gameId": secrets.token_hex(4),  # new for every game; a seat belongs to one game
         "totalMs": total,
         "p1RemainingMs": total,
         "p2RemainingMs": total,
@@ -133,6 +137,8 @@ def default_state():
         "turnStartedAt": None,
         "p1Taken": False,
         "p2Taken": False,
+        "p1Token": None,  # server-only: proves which phone holds which seat
+        "p2Token": None,
         "p1Misses": 0,
         "p2Misses": 0,
         "winner": None,
@@ -167,6 +173,8 @@ def finalize_if_expired(state):
 def snapshot():
     finalize_if_expired(STATE)
     s = dict(STATE)
+    s.pop("p1Token", None)  # never sent: a phone only learns its own token, from /join
+    s.pop("p2Token", None)
     if s.get("puzzle"):
         puzzle = s["puzzle"]
         s["puzzle"] = {
@@ -203,9 +211,23 @@ def do_join():
         if STATE["p1Taken"] and STATE["p2Taken"]:
             STATE["status"] = "ready"
 
+        STATE[role + "Token"] = secrets.token_urlsafe(16)
         s = snapshot()
         s["yourRole"] = role
+        s["yourToken"] = STATE[role + "Token"]
         return s, 200
+
+
+def role_for_token(token):
+    """The seat ("p1" or "p2") a token belongs to, or None."""
+    if not isinstance(token, str) or not token:
+        return None
+    with LOCK:
+        for role in ("p1", "p2"):
+            expected = STATE.get(role + "Token")
+            if expected and secrets.compare_digest(token, expected):
+                return role
+    return None
 
 
 def do_start():
@@ -531,6 +553,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
 
   var myRole = sessionStorage.getItem('duelclock_role') || null;
+  // The server's proof that this phone holds myRole's seat; sent with every action.
+  var myToken = sessionStorage.getItem('duelclock_token') || null;
+  var myGame = sessionStorage.getItem('duelclock_game') || null;  // the game the seat belongs to
+  function forgetSeat() {
+    myRole = null; myToken = null; myGame = null;
+    sessionStorage.removeItem('duelclock_role');
+    sessionStorage.removeItem('duelclock_token');
+    sessionStorage.removeItem('duelclock_game');
+  }
   var joinInFlight = false;
   var lastState = null;
   var rafHandle = null;
@@ -556,23 +587,30 @@ INDEX_HTML = r"""<!DOCTYPE html>
       }
       document.getElementById('claimErr').textContent = '';
       myRole = res.data.yourRole;
+      myToken = res.data.yourToken;
+      myGame = res.data.gameId;
       sessionStorage.setItem('duelclock_role', myRole);
+      sessionStorage.setItem('duelclock_token', myToken);
+      sessionStorage.setItem('duelclock_game', myGame);
       onState(res.data);
     }).catch(function(){ joinInFlight = false; });
   }
 
   document.getElementById('startBtn').addEventListener('click', function(){
-    post('/start', {}).then(function(res){ if (res.ok) onState(res.data); });
+    post('/start', { token: myToken }).then(function(res){ if (res.ok) onState(res.data); });
   });
 
   document.getElementById('playAgainBtn').addEventListener('click', function(){
     document.getElementById('resultOverlay').classList.remove('show');
-    myRole = null;
-    sessionStorage.removeItem('duelclock_role');
-    post('/new', {}).then(function(res){ onState(res.data); });
+    var token = myToken;  // the reset needs this game's token; then the seat is gone
+    forgetSeat();
+    post('/new', { token: token }).then(function(res){ onState(res.data); });
   });
 
   function onState(state) {
+    // A seat from an earlier game (after Play again, or a server restart)
+    // isn't ours any more, even if someone has taken the same seat number.
+    if (myRole && state.gameId !== myGame) forgetSeat();
     lastState = state;
     frameStart = Date.now();  // when this state arrived; clocks extrapolate from here
     if (state.status === 'claiming' || state.status === 'ready') {
@@ -584,7 +622,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     }
     if (state.status === 'claiming') {
       if (myRole && ((myRole === 'p1' && !state.p1Taken) || (myRole === 'p2' && !state.p2Taken))) {
-        myRole = null; sessionStorage.removeItem('duelclock_role');
+        forgetSeat();
       }
       showScreen('claiming');
       var sub = document.getElementById('claimingSub');
@@ -821,7 +859,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     if (!lastState || lastState.status !== 'active' || lastState.activePlayer !== myRole) return;
     if (lastState.puzzle && lastState.puzzle.id !== puzzleId) return;  // stale tile
     var wasRole = myRole;
-    post('/answer', { role: myRole, choice: choiceSlot, puzzleId: puzzleId }).then(function(res) {
+    post('/answer', { token: myToken, choice: choiceSlot, puzzleId: puzzleId }).then(function(res) {
       if (!res.ok) return;
       var stillMine = res.data.status === 'active' && res.data.activePlayer === wasRole;
       if (stillMine) flashPenalty();
@@ -879,60 +917,122 @@ INDEX_HTML = r"""<!DOCTYPE html>
 """
 
 
+OWN_NAMES = {"localhost", socket.gethostname().lower(), socket.gethostname().lower() + ".local"}
+SECURITY_HEADERS = {
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "X-Frame-Options": "DENY",
+}
+# The page is one file with its script and styles inline, so those must be
+# allowed; everything else (other servers, framing, forms) is not.
+PAGE_CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
+            "form-action 'none'")
+
+
+def host_allowed(host_header):
+    """True if the Host header is an IP address, localhost or this computer's
+    name. Anything else is a web page on another site trying to reach the
+    game through a player's browser (DNS rebinding), so it's refused."""
+    if not host_header:
+        return False
+    host = host_header.strip().lower()
+    if host.startswith("["):                    # [IPv6]:port
+        host = host[1:host.find("]")] if "]" in host else ""
+    elif host.count(":") == 1:                  # name:port or IPv4:port
+        host = host.rsplit(":", 1)[0]
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return host in OWN_NAMES
+
+
 class Handler(BaseHTTPRequestHandler):
-    def _send_json(self, obj, code=200):
-        body = json.dumps(obj).encode("utf-8")
+    def _send(self, body, content_type, code=200, extra=None):
         self.send_response(code)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        for name, value in {**SECURITY_HEADERS, **(extra or {})}.items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_json(self, obj, code=200):
+        self._send(json.dumps(obj).encode("utf-8"), "application/json", code)
 
     def _send_html(self):
-        body = INDEX_HTML.encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
+        self._send(INDEX_HTML.encode("utf-8"), "text/html; charset=utf-8",
+                   extra={"Content-Security-Policy": PAGE_CSP})
+
+    def _host_ok(self):
+        if host_allowed(self.headers.get("Host")):
+            return True
+        self._send_json({"error": "bad_host"}, 403)
+        return False
 
     def do_GET(self):
+        if not self._host_ok():
+            return
         path = self.path.split("?", 1)[0]
         if path in ("/", "/index.html"):
             self._send_html()
         elif path == "/state":
             self._send_json(snapshot())
         else:
-            self.send_error(404)
+            self._send_json({"error": "not_found"}, 404)
+
+    def _read_json(self):
+        """The request's JSON object, or None after sending an error. Only
+        small application/json bodies are accepted: a page on another site
+        can't send JSON to this server without the browser refusing."""
+        ctype = self.headers.get("Content-Type", "").split(";")[0].strip().lower()
+        if ctype != "application/json":
+            self._send_json({"error": "json_only"}, 415)
+            return None
+        try:
+            length = int(self.headers.get("Content-Length", ""))
+        except ValueError:
+            self._send_json({"error": "length_required"}, 411)
+            return None
+        if not 0 <= length <= MAX_BODY_BYTES:
+            self._send_json({"error": "too_large"}, 413)
+            return None
+        try:
+            payload = json.loads(self.rfile.read(length) or b"{}")
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            payload = None
+        if not isinstance(payload, dict):
+            self._send_json({"error": "bad_json"}, 400)
+            return None
+        return payload
 
     def do_POST(self):
-        try:
-            length = int(self.headers.get("Content-Length", 0) or 0)
-        except ValueError:
-            length = 0
-        length = max(0, min(length, 10_000))  # bodies here are tiny
-        raw = self.rfile.read(length) if length else b"{}"
-        try:
-            payload = json.loads(raw or b"{}")
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            payload = {}
-        if not isinstance(payload, dict):
-            payload = {}
+        if not self._host_ok():
+            return
+        if self.path not in ("/join", "/start", "/answer", "/new"):
+            self._send_json({"error": "not_found"}, 404)
+            return
+        payload = self._read_json()
+        if payload is None:
+            return
 
         if self.path == "/join":
             result, code = do_join()
-        elif self.path == "/start":
-            result, code = do_start()
-        elif self.path == "/answer":
-            result, code = do_answer(payload.get("role"), payload.get("choice"),
-                                     payload.get("puzzleId"))
-        elif self.path == "/new":
-            result, code = do_new()
         else:
-            self.send_error(404)
-            return
+            # Every other action needs the token /join gave this phone; the
+            # seat comes from the token, never from what the phone claims.
+            role = role_for_token(payload.get("token"))
+            if role is None:
+                self._send_json({"error": "bad_token"}, 403)
+                return
+            if self.path == "/start":
+                result, code = do_start()
+            elif self.path == "/answer":
+                result, code = do_answer(role, payload.get("choice"), payload.get("puzzleId"))
+            else:
+                result, code = do_new()
         self._send_json(result, code)
 
     def log_message(self, format, *args):

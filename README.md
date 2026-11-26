@@ -23,12 +23,25 @@ Full details in [time-duel-spec.md](time-duel-spec.md).
 
 ## Security
 
-**None.** There is zero security implemented: no authentication, no HTTPS, no rate limiting, and anyone on the LAN can join or interfere with a game. This is a demo toy — run it only on a trusted local network.
+Time Duel assumes a trusted home network: there's no HTTPS and no password,
+and anyone on the same Wi-Fi can open the page, watch, and join a free seat.
+Within that, the server:
+
+- gives each player's phone a random token when it joins, and checks it on
+  every answer, start and reset, so one phone can't play as the other;
+- accepts only small JSON requests;
+- refuses requests addressed to anything but an IP address, `localhost` or
+  the computer's own name, so other websites can't reach the game through a
+  player's browser;
+- sends standard security headers.
+
+Don't expose it beyond a trusted local network. Details in
+[time-duel-spec.md](time-duel-spec.md), section 6.2.
 
 ## Tests
 
 ```bash
-python3 -m pytest test_duel_clock_server.py
+python3 -m unittest test_duel_clock_server
 ```
 
 ## License

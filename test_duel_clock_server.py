@@ -378,11 +378,122 @@ class TestHttpEndpoints(unittest.TestCase):
         self.assertTrue("error" in s or s.get("error") == "empty_response")
 
     def test_join_and_start(self):
-        self._post("/join", {"player": "p1"})
-        self._post("/join", {"player": "p2"})
-        result = self._post("/start", {"player": "p1"})
+        srv.STATE = srv.default_state()
+        p1 = self._post("/join", {})
+        self._post("/join", {})
+        result = self._post("/start", {"token": p1["yourToken"]})
         self.assertIn("puzzle", result)
         self.assertEqual(result["status"], "active")
+
+
+class TestNetworkProtections(unittest.TestCase):
+    """Player tokens, JSON-only POSTs, the Host check and response headers."""
+
+    @classmethod
+    def setUpClass(cls):
+        srv._mock_time = None
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), srv.Handler)
+        cls.port = cls.server.server_address[1]
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def setUp(self):
+        srv.STATE = srv.default_state()
+
+    def request(self, method, path, body=None, host=None, ctype="application/json", raw=None):
+        conn = HTTPConnection("127.0.0.1", self.port)
+        headers = {"Host": host or "127.0.0.1:%d" % self.port}
+        data = raw if raw is not None else (None if body is None else json.dumps(body).encode())
+        if data is not None:
+            headers["Content-Type"] = ctype
+            headers["Content-Length"] = str(len(data))
+        conn.request(method, path, body=data, headers=headers)
+        resp = conn.getresponse()
+        payload = resp.read()
+        conn.close()
+        try:
+            return resp.status, json.loads(payload), resp
+        except ValueError:
+            return resp.status, payload, resp
+
+    def join_both(self):
+        _, p1, _ = self.request("POST", "/join", {})
+        _, p2, _ = self.request("POST", "/join", {})
+        return p1["yourToken"], p2["yourToken"]
+
+    def test_tokens_are_issued_and_never_in_state(self):
+        t1, t2 = self.join_both()
+        self.assertNotEqual(t1, t2)
+        _, state, _ = self.request("GET", "/state")
+        text = json.dumps(state)
+        self.assertNotIn(t1, text)
+        self.assertNotIn(t2, text)
+        self.assertNotIn("Token", text)
+
+    def test_actions_need_a_valid_token(self):
+        t1, _ = self.join_both()
+        for path, body in [("/start", {}), ("/start", {"token": "forged"}),
+                           ("/answer", {"choice": 0}), ("/answer", {"role": "p1", "choice": 0}),
+                           ("/new", {"token": ""})]:
+            status, result, _ = self.request("POST", path, body)
+            self.assertEqual((status, result.get("error")), (403, "bad_token"), (path, body))
+        self.assertEqual(self.request("POST", "/start", {"token": t1})[0], 200)
+
+    def test_seat_comes_from_token_not_claimed_role(self):
+        t1, t2 = self.join_both()
+        self.request("POST", "/start", {"token": t1})          # p1 moves first
+        # p2 claiming to be p1 still answers as p2: not their turn
+        status, result, _ = self.request("POST", "/answer", {"token": t2, "role": "p1", "choice": 0})
+        self.assertEqual((status, result.get("error")), (409, "not_your_turn"))
+        self.assertEqual(srv.STATE["p1Misses"], 0)
+
+    def test_each_game_has_its_own_id(self):
+        _, first, _ = self.request("POST", "/join", {})
+        self.assertTrue(first["gameId"])
+        srv.STATE["status"] = "gameover"
+        _, after, _ = self.request("POST", "/new", {"token": first["yourToken"]})
+        self.assertNotEqual(after["gameId"], first["gameId"])
+
+    def test_new_game_invalidates_old_tokens(self):
+        t1, t2 = self.join_both()
+        srv.STATE["status"] = "gameover"
+        self.assertEqual(self.request("POST", "/new", {"token": t2})[0], 200)
+        self.assertEqual(self.request("POST", "/start", {"token": t1})[0], 403)
+
+    def test_json_only_and_size_limit(self):
+        status, result, _ = self.request("POST", "/join", raw=b"{}", ctype="text/plain")
+        self.assertEqual((status, result["error"]), (415, "json_only"))
+        status, result, _ = self.request("POST", "/join", {"pad": "x" * 2000})
+        self.assertEqual((status, result["error"]), (413, "too_large"))
+        status, result, _ = self.request("POST", "/join", raw=b"[1]")
+        self.assertEqual((status, result["error"]), (400, "bad_json"))
+        self.assertFalse(srv.STATE["p1Taken"])
+
+    def test_other_host_names_refused(self):
+        for method, path in [("GET", "/"), ("GET", "/state"), ("POST", "/join")]:
+            status, result, _ = self.request(method, path, {} if method == "POST" else None,
+                                             host="attacker.example")
+            self.assertEqual((status, result.get("error")), (403, "bad_host"), path)
+        self.assertFalse(srv.STATE["p1Taken"])
+
+    def test_host_allowed(self):
+        for h in ["127.0.0.1", "192.168.1.5:8765", "[::1]:8765", "::1", "localhost:8765"]:
+            self.assertTrue(srv.host_allowed(h), h)
+        for h in [None, "", "evil.example", "127.0.0.1.evil.example:8765"]:
+            self.assertFalse(srv.host_allowed(h), h)
+
+    def test_security_headers(self):
+        _, _, resp = self.request("GET", "/")
+        self.assertIn("frame-ancestors 'none'", resp.getheader("Content-Security-Policy"))
+        self.assertEqual(resp.getheader("X-Content-Type-Options"), "nosniff")
+        self.assertEqual(resp.getheader("X-Frame-Options"), "DENY")
+        _, _, resp = self.request("GET", "/state")
+        self.assertEqual(resp.getheader("Cache-Control"), "no-store")
 
 
 if __name__ == "__main__":
