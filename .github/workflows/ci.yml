@@ -30,6 +30,6 @@ jobs:
           echo "${SHA256}  /tmp/actionlint.tar.gz" | sha256sum -c -
           tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
       - name: Lint (pyflakes, actionlint)
-        run: python3 -m pyflakes *.py && /tmp/actionlint
+        run: python3 -m pyflakes ./*.py && /tmp/actionlint
       - name: Tests
         run: python3 -m unittest test_duel_clock_server
