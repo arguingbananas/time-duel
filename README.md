@@ -44,6 +44,9 @@ Don't expose it beyond a trusted local network. Details in
 python3 -m unittest test_duel_clock_server
 ```
 
+CI runs the tests, pyflakes and actionlint on every pull request, and CodeQL
+scans the code; changes reach `main` only through pull requests that pass them.
+
 ## License
 
 Released under the [MIT License](LICENSE).

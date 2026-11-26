@@ -1,0 +1,12 @@
+# Weekly update PRs for the pinned GitHub Actions; minor and patch updates
+# grouped into one PR. Security alerts are enabled separately.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      actions-minor-and-patch:
+        update-types: [minor, patch]

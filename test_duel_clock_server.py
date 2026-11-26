@@ -265,6 +265,7 @@ class TestGameFlow(unittest.TestCase):
         missing_idx = puzzle["missingIndex"]
         # currentMissingIndex at start equals missingIndex
         current_missing = srv.get_current_missing_index(puzzle)
+        self.assertEqual(current_missing, missing_idx)
         # Find a choice that matches currentMissingIndex
         matching_choices = [
             i for i, c in enumerate(puzzle["choices"])
